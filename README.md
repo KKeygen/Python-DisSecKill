@@ -1,6 +1,8 @@
 # DisSecKill — 分布式商品库存与秒杀系统
 
-基于 Python 的分布式微服务架构秒杀系统。
+基于 Python 的分布式微服务架构秒杀系统，实现了完整的商品管理、库存管理、秒杀抢购、订单处理等功能。
+
+![系统概览](docs/diagrams/system_overview.png)
 
 ## 技术栈
 
@@ -10,21 +12,57 @@
 | 框架    | FastAPI + Uvicorn                         |
 | ORM     | SQLAlchemy 2.0 (async)                    |
 | 数据库  | MySQL 8.0                                 |
-| 缓存    | Redis 7                                   |
-| 消息队列| RabbitMQ 3.12                             |
-| 网关    | Nginx                                     |
+| 缓存    | Redis 7 (Lua脚本/分布式锁/缓存三防)       |
+| 消息队列| RabbitMQ 3.12 (持久化/死信队列)            |
+| 网关    | Nginx (负载均衡/动静分离/限流)             |
+| 前端    | Vue 3 + TypeScript + Pinia                |
 | 容器化  | Docker + Docker Compose                   |
 | 认证    | JWT (python-jose + passlib/bcrypt)        |
+| 压测    | Locust (替代JMeter)                       |
 
-## 服务架构
+## 系统架构
 
 ```
-Nginx Gateway (:80)
-  ├── 用户服务   (:8001)  /api/user/
-  ├── 商品服务   (:8002)  /api/goods/
-  ├── 订单服务   (:8003)  /api/order/
-  └── 库存服务   (:8004)  /api/inventory/
+┌──────────── 客户端 ────────────┐
+│  Vue 3 SPA / 浏览器 / 移动端   │
+└──────────────┬─────────────────┘
+               ▼
+┌──────── Nginx 网关 (:80) ──────┐
+│ 限流 | 负载均衡 | 动静分离      │
+└──┬───────┬───────┬───────┬─────┘
+   ▼       ▼       ▼       ▼
+用户服务  商品服务  订单服务  库存服务
+ x2实例   x2实例   x2实例   x2实例
+ :8001    :8002    :8003    :8004
+   │       │       │       │
+   ▼       ▼       ▼       ▼
+ MySQL    Redis   RabbitMQ
+ :3306    :6379    :5672
 ```
+
+### 负载均衡策略
+
+| 服务     | 算法         | 说明                              |
+|----------|-------------|-----------------------------------|
+| 用户服务 | 轮询(默认)   | 无状态认证，均等分配                |
+| 商品服务 | 加权轮询 3:1 | 模拟异构节点性能差异                |
+| 订单服务 | 最少连接     | 订单处理耗时不均匀                  |
+| 库存服务 | IP Hash      | 利用本地sold_out_map缓存            |
+
+### 秒杀核心：五层防超卖
+
+```
+1. Nginx限流 → 2. 本地内存标记 → 3. Redis Lua原子扣减
+   → 4. RabbitMQ异步削峰 → 5. MySQL乐观锁兜底
+```
+
+### 分布式缓存三防
+
+| 问题     | 方案                                    |
+|----------|----------------------------------------|
+| 缓存穿透 | 空值缓存(TTL=60s)                       |
+| 缓存击穿 | Redis SETNX 分布式互斥锁                |
+| 缓存雪崩 | TTL随机偏移(±30s)                       |
 
 ## 快速启动
 
@@ -101,4 +139,39 @@ curl http://localhost:8001/api/user/profile \
 
 ## 设计文档
 
-详见 [docs/DESIGN.md](docs/DESIGN.md)
+详见 [docs/DESIGN.md](docs/DESIGN.md) | [docs/SECKILL_DESIGN.md](docs/SECKILL_DESIGN.md)
+
+## 压力测试
+
+使用 Locust (Python版压力测试工具) 替代 JMeter：
+
+```bash
+# 安装 Locust
+pip install locust
+
+# 秒杀场景（1000并发，每秒100增长）
+locust -f tests/locustfile.py SeckillUser --host=http://localhost \
+  --users 1000 --spawn-rate 100 --run-time 60s --headless
+
+# 静态资源压测（验证动静分离效果）
+locust -f tests/locustfile.py StaticFileUser --host=http://localhost \
+  --users 500 --spawn-rate 50 --run-time 30s --headless
+
+# API接口压测（对比动态请求延迟）
+locust -f tests/locustfile.py ApiUser --host=http://localhost \
+  --users 200 --spawn-rate 20 --run-time 30s --headless
+
+# 负载均衡验证
+locust -f tests/locustfile.py LoadBalanceUser --host=http://localhost \
+  --users 200 --spawn-rate 20 --run-time 60s --headless
+
+# 检查各后端实例处理的请求数
+docker logs disseckill-goods-1 2>&1 | grep -c "GET /api/goods"
+docker logs disseckill-goods-2 2>&1 | grep -c "GET /api/goods"
+```
+
+### 防超卖验证
+
+```bash
+python tests/test_oversell.py --stock 100 --users 500 --host http://localhost
+```

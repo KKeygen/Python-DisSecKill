@@ -1,5 +1,24 @@
 # 分布式商品库存与秒杀系统 — 系统设计文档
 
+## 0. 系统架构图（PlantUML 生成）
+
+### 系统架构总览
+![系统架构图](diagrams/architecture.png)
+
+### 系统概览插图 (NanoBanana AI 生成)
+![系统概览插图](diagrams/system_overview.png)
+
+### 数据库 ER 图
+![数据库ER图](diagrams/er_diagram.png)
+
+### 系统类图
+![系统类图](diagrams/class_diagram.png)
+
+### 秒杀时序图
+![秒杀时序图](diagrams/seckill_flow.png)
+
+---
+
 ## 1. 系统架构概览
 
 ```
@@ -244,4 +263,219 @@ Python-DisSecKill/
 │   └── inventory_service/       # 库存服务
 └── scripts/                     # 工具脚本
     └── init_db.sql              # 数据库初始化
+```
+
+---
+
+## 6. 负载均衡设计
+
+### 6.1 多实例部署
+
+每个后端微服务可启动多个实例，通过 Docker Compose `deploy.replicas` 或手动指定多端口实现：
+
+```yaml
+# docker-compose.yml 中 goods-service 示例
+goods-service-1:
+  build: ./services/goods_service
+  ports: ["8002:8002"]
+
+goods-service-2:
+  build: ./services/goods_service
+  ports: ["8012:8002"]
+```
+
+### 6.2 Nginx 负载均衡算法
+
+| 算法 | 配置指令 | 说明 |
+|------|---------|------|
+| 轮询（默认） | 无需额外指令 | 依次转发到每个后端，适合性能均匀的场景 |
+| 加权轮询 | `server xxx weight=3;` | 按权重分配，性能强的节点分配更多请求 |
+| IP Hash | `ip_hash;` | 按客户端IP分配，保证同一用户请求同一后端，适合有状态会话 |
+| 最少连接 | `least_conn;` | 转发到当前连接数最少的后端，适合请求处理耗时不均匀 |
+
+```nginx
+# gateway/nginx.conf — 多实例轮询配置
+upstream goods_service {
+    # 算法切换：取消注释对应行
+    # ip_hash;
+    # least_conn;
+    server goods-service-1:8002;
+    server goods-service-2:8002;
+}
+```
+
+### 6.3 压力测试验证
+
+使用 Locust (Python版JMeter) 进行压力测试：
+
+```bash
+# 启动压测
+locust -f tests/locustfile.py --host=http://localhost --headless \
+    -u 200 -r 20 --run-time 60s
+```
+
+验证要点：
+- 观察 Nginx access.log 或后端日志，确认请求均匀分布
+- 检查各实例的 `/health` 端点响应时间
+- 对比不同负载均衡算法下的 p50/p95/p99 延迟
+
+---
+
+## 7. 动静分离设计
+
+### 7.1 架构说明
+
+将前端静态资源（HTML/CSS/JS/图片）和后端 API 请求通过 Nginx 分离处理：
+
+```
+客户端请求
+    │
+    ├── /api/*     →  反向代理到后端微服务（动态请求）
+    ├── /static/*  →  Nginx直接返回静态文件（零后端开销）
+    └── /          →  Nginx返回 index.html（SPA入口）
+```
+
+### 7.2 Nginx 配置
+
+```nginx
+server {
+    listen 80;
+
+    # 静态资源：Nginx直接服务，开启缓存
+    location /static/ {
+        alias /usr/share/nginx/html/static/;
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+        access_log off;  # 静态资源不记录日志，提升性能
+    }
+
+    # 前端SPA入口
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 动态API请求：代理到后端
+    location /api/ {
+        proxy_pass http://backend_upstream;
+    }
+}
+```
+
+### 7.3 性能对比测试
+
+```bash
+# 压测静态文件 (预期: 更高吞吐、更低延迟)
+locust -f tests/locustfile.py --host=http://localhost --headless \
+    -u 500 -r 50 --run-time 30s --tags static
+
+# 压测动态API (预期: 较低吞吐、较高延迟)
+locust -f tests/locustfile.py --host=http://localhost --headless \
+    -u 200 -r 20 --run-time 30s --tags api
+```
+
+---
+
+## 8. 分布式缓存设计
+
+### 8.1 商品详情页缓存
+
+使用 Redis 缓存商品详情，减少数据库查询：
+
+```python
+# 缓存策略
+GET /api/goods/{goods_id}
+    → 先查Redis → 命中则直接返回
+    → 未命中则查MySQL → 写入Redis（带TTL）→ 返回
+```
+
+### 8.2 缓存三大问题及解决方案
+
+| 问题 | 描述 | 解决方案 |
+|------|------|---------|
+| **缓存穿透** | 大量请求查询不存在的数据，绕过缓存直接打到数据库 | 1. 缓存空值(null value)，TTL设短(60s) <br> 2. 布隆过滤器前置拦截 |
+| **缓存击穿** | 热点key过期瞬间，大量并发请求同时打到数据库 | 1. 互斥锁(Redis SETNX)，只允许一个请求回源 <br> 2. 逻辑过期(不设TTL，由后台线程异步更新) |
+| **缓存雪崩** | 大量key同时过期，导致数据库压力突增 | 1. TTL加随机偏移量(±30s) <br> 2. 多级缓存(本地缓存+Redis) <br> 3. 限流降级兜底 |
+
+### 8.3 实现细节
+
+```python
+class GoodsCacheService:
+    CACHE_PREFIX = "goods:detail:"
+    NULL_PREFIX = "goods:null:"
+    LOCK_PREFIX = "goods:lock:"
+    CACHE_TTL = 300        # 正常缓存5分钟
+    NULL_TTL = 60          # 空值缓存1分钟
+    LOCK_TTL = 10          # 分布式锁10秒
+
+    async def get_goods_detail(self, goods_id: int):
+        cache_key = f"{self.CACHE_PREFIX}{goods_id}"
+
+        # 1. 查缓存
+        cached = await self.redis.get(cache_key)
+        if cached:
+            return json.loads(cached)
+
+        # 2. 检查空值缓存（防穿透）
+        if await self.redis.exists(f"{self.NULL_PREFIX}{goods_id}"):
+            return None
+
+        # 3. 抢分布式锁（防击穿）
+        lock_key = f"{self.LOCK_PREFIX}{goods_id}"
+        acquired = await self.redis.set(lock_key, "1", ex=self.LOCK_TTL, nx=True)
+        if not acquired:
+            await asyncio.sleep(0.1)  # 等待重试
+            return await self.get_goods_detail(goods_id)
+
+        try:
+            # 4. 查数据库
+            goods = await self._query_db(goods_id)
+            if goods is None:
+                await self.redis.set(f"{self.NULL_PREFIX}{goods_id}", "1", ex=self.NULL_TTL)
+                return None
+            # 5. 写缓存（TTL加随机偏移防雪崩）
+            ttl = self.CACHE_TTL + random.randint(-30, 30)
+            await self.redis.set(cache_key, json.dumps(goods), ex=ttl)
+            return goods
+        finally:
+            await self.redis.delete(lock_key)
+```
+
+---
+
+## 9. 容器环境说明
+
+### 9.1 各服务 Dockerfile
+
+所有微服务采用统一的 Dockerfile 模板：
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 800x
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "800x"]
+```
+
+### 9.2 Docker Compose 编排
+
+```
+┌─ 基础设施 ─────────────────────────────────────────────┐
+│  MySQL 8.0 | Redis 7 | RabbitMQ 3.12                   │
+├─ 微服务层 ─────────────────────────────────────────────┤
+│  user-service x2 | goods-service x2                     │
+│  order-service x2 | inventory-service x2                │
+│  seckill-consumer x1                                    │
+├─ 网关层 ───────────────────────────────────────────────┤
+│  Nginx (80端口) → 负载均衡/动静分离/限流                  │
+├─ 前端 ─────────────────────────────────────────────────┤
+│  Vue 3 SPA (Nginx 3000端口)                              │
+└─────────────────────────────────────────────────────────┘
+```
+
+启动命令：
+```bash
+docker-compose up -d --build
 ```

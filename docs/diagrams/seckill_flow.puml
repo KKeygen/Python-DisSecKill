@@ -1,0 +1,75 @@
+@startuml seckill_flow
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Noto Sans CJK SC
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam SequenceMessageAlignment center
+
+title 秒杀抢购时序图 — 多层防超卖
+
+actor "用户" as user
+participant "Nginx网关\n(限流)" as nginx #D5F5E3
+participant "库存服务\n(FastAPI)" as inv #FDEBD0
+participant "Redis\n(Lua原子操作)" as redis #F5EEF8
+participant "RabbitMQ\n(异步削峰)" as mq #FDEDEC
+participant "秒杀消费者" as consumer #EBF5FB
+participant "MySQL\n(乐观锁)" as mysql #E8F8F5
+
+== 第1层: Nginx 限流 ==
+user -> nginx : POST /api/inventory/seckill
+nginx -> nginx : 检查限流 (50 req/s)
+alt 被限流
+    nginx --> user : 429 Too Many Requests
+end
+
+== 第2层: 本地内存快速拒绝 ==
+nginx -> inv : 转发请求
+inv -> inv : 检查 sold_out_map
+alt 本地标记已售罄
+    inv --> user : {"success": false, "message": "库存不足"}
+end
+
+== 第3层: Redis Lua 原子扣减 ==
+inv -> redis : EVAL Lua脚本\n(stock_key, user_set_key, user_id)
+redis -> redis : 1. sismember 去重检查\n2. get 库存检查\n3. decr + sadd 原子操作
+alt 重复秒杀 (return -1)
+    redis --> inv : -1
+    inv --> user : {"success": false, "message": "请勿重复秒杀"}
+else 库存不足 (return 0)
+    redis --> inv : 0
+    inv -> inv : sold_out_map[goods_id] = True
+    inv --> user : {"success": false, "message": "库存不足"}
+else 扣减成功 (return 1)
+    redis --> inv : 1
+end
+
+== 第4层: MQ 异步下单 ==
+inv -> mq : publish (persistent)\n{user_id, goods_id, request_id}
+alt MQ投递失败
+    inv -> redis : INCR stock + SREM user\n(Saga补偿回滚)
+    inv --> user : {"success": false, "message": "系统繁忙"}
+else MQ投递成功
+    inv --> user : {"success": true, "order_id": "xxx"}
+end
+
+== 第5层: 消费者处理 ==
+mq -> consumer : 消费消息
+consumer -> consumer : 幂等去重检查\n(df_seckill_processed)
+consumer -> mysql : 乐观锁二次扣减\nWHERE version = ?
+alt 乐观锁成功
+    consumer -> mysql : INSERT 订单记录
+    consumer -> redis : SET 秒杀结果(成功)
+else 乐观锁失败
+    consumer -> redis : INCR 回滚库存
+    consumer -> redis : SET 秒杀结果(失败)
+end
+
+== 用户轮询结果 ==
+user -> inv : GET /seckill/result/{request_id}
+inv -> redis : 查询秒杀结果
+redis --> inv : 结果
+inv --> user : 订单详情 / 失败原因
+
+@enduml

@@ -31,3 +31,7 @@ rabbitmq_data/
 # OS
 .DS_Store
 Thumbs.db
+misc/
+
+# PlantUML JAR (大文件，不纳入版本控制)
+docs/diagrams/plantuml.jar

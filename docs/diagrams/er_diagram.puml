@@ -1,0 +1,103 @@
+@startuml er_diagram
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Noto Sans CJK SC
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam linetype ortho
+
+title 数据库ER图 — 分布式秒杀系统
+
+skinparam entity {
+    BackgroundColor #EBF5FB
+    BorderColor #2980B9
+}
+
+entity "df_user\n用户表" as user {
+    * **id** : BIGINT <<PK, AUTO>>
+    --
+    * username : VARCHAR(50) <<UNIQUE>>
+    * password : VARCHAR(255)
+    * email : VARCHAR(100) <<UNIQUE>>
+    phone : VARCHAR(20)
+    is_active : BOOLEAN = TRUE
+    is_admin : BOOLEAN = FALSE
+    create_time : DATETIME
+    update_time : DATETIME
+}
+
+entity "df_goods_category\n商品分类表" as category {
+    * **id** : BIGINT <<PK, AUTO>>
+    --
+    * name : VARCHAR(50) <<UNIQUE>>
+    description : TEXT
+    sort_order : INT = 0
+    is_active : BOOLEAN = TRUE
+    create_time : DATETIME
+    update_time : DATETIME
+}
+
+entity "df_goods\n商品表" as goods {
+    * **id** : BIGINT <<PK, AUTO>>
+    --
+    * category_id : BIGINT <<FK>>
+    * name : VARCHAR(200)
+    description : TEXT
+    * price : DECIMAL(10,2)
+    unit : VARCHAR(20)
+    image : VARCHAR(500)
+    is_seckill : BOOLEAN = FALSE
+    seckill_price : DECIMAL(10,2)
+    seckill_start : DATETIME
+    seckill_end : DATETIME
+    status : SMALLINT = 1
+    create_time : DATETIME
+    update_time : DATETIME
+}
+
+entity "df_inventory\n库存表" as inventory {
+    * **id** : BIGINT <<PK, AUTO>>
+    --
+    * goods_id : BIGINT <<FK, UNIQUE>>
+    * stock : INT = 0
+    locked_stock : INT = 0
+    version : INT = 0
+    create_time : DATETIME
+    update_time : DATETIME
+}
+
+entity "df_order\n订单表" as orders {
+    * **id** : VARCHAR(32) <<PK>>
+    --
+    * user_id : BIGINT <<FK>>
+    * goods_id : BIGINT <<FK>>
+    * count : INT
+    * total_price : DECIMAL(10,2)
+    pay_method : SMALLINT
+    order_status : SMALLINT = 1
+    address : VARCHAR(500)
+    trade_no : VARCHAR(100)
+    is_seckill : BOOLEAN = FALSE
+    create_time : DATETIME
+    update_time : DATETIME
+}
+
+entity "df_seckill_processed\n秒杀幂等去重表" as seckill_processed {
+    * **id** : BIGINT <<PK, AUTO>>
+    --
+    * request_id : VARCHAR(64) <<UNIQUE>>
+    * user_id : BIGINT
+    * goods_id : BIGINT
+    order_id : VARCHAR(32)
+    status : VARCHAR(20) = 'processing'
+    create_time : DATETIME
+}
+
+' 关系
+category ||--o{ goods : "1:N 分类包含商品"
+goods ||--|| inventory : "1:1 商品对应库存"
+user ||--o{ orders : "1:N 用户拥有订单"
+goods ||--o{ orders : "1:N 商品出现在订单中"
+
+@enduml

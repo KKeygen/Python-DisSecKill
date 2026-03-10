@@ -1,0 +1,79 @@
+@startuml architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Noto Sans CJK SC
+skinparam defaultFontSize 13
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam ArrowColor #2C3E50
+skinparam ArrowThickness 2
+
+title 分布式商品库存与秒杀系统 — 系统架构图
+
+skinparam cloud {
+    BackgroundColor #EBF5FB
+    BorderColor #2980B9
+}
+skinparam node {
+    BackgroundColor #FDEBD0
+    BorderColor #E67E22
+}
+skinparam component {
+    BackgroundColor #E8F8F5
+    BorderColor #1ABC9C
+}
+skinparam database {
+    BackgroundColor #F5EEF8
+    BorderColor #8E44AD
+}
+skinparam queue {
+    BackgroundColor #FDEDEC
+    BorderColor #E74C3C
+}
+
+cloud "客户端" as client {
+    [Web浏览器\nVue 3 + TypeScript] as browser
+    [移动端 / Postman] as mobile
+}
+
+node "API网关层" as gateway_layer {
+    component "Nginx 网关\n限流 / 路由 / 负载均衡\n动静分离" as nginx #D5F5E3
+}
+
+node "微服务层" as service_layer {
+    component "用户服务\nFastAPI :8001\n注册/登录/JWT" as user_svc
+    component "商品服务\nFastAPI :8002\n商品CRUD/分类" as goods_svc
+    component "订单服务\nFastAPI :8003\n下单/查询/状态" as order_svc
+    component "库存服务\nFastAPI :8004\n库存扣减/秒杀" as inv_svc
+    component "秒杀消费者\n异步订单创建" as consumer
+}
+
+node "数据层" as data_layer {
+    database "MySQL 8.0\n持久化存储\n:3306" as mysql
+    database "Redis 7\n缓存 / 库存预扣\nLua原子脚本\n:6379" as redis
+    queue "RabbitMQ 3.12\n异步削峰\n死信队列\n:5672" as rabbitmq
+}
+
+' 客户端 -> 网关
+browser -down-> nginx : HTTP请求
+mobile -down-> nginx
+
+' 网关 -> 微服务
+nginx -down-> user_svc : /api/user/
+nginx -down-> goods_svc : /api/goods/
+nginx -down-> order_svc : /api/order/
+nginx -down-> inv_svc : /api/inventory/
+
+' 微服务 -> 数据层
+user_svc -down-> mysql
+goods_svc -down-> mysql
+goods_svc -down-> redis : 商品缓存
+order_svc -down-> mysql
+inv_svc -down-> redis : Lua原子扣减
+inv_svc -down-> rabbitmq : 发送秒杀消息
+consumer -down-> mysql : 创建订单
+consumer -left-> rabbitmq : 消费消息
+consumer -down-> redis : 结果缓存\n补偿回滚
+
+@enduml

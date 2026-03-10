@@ -55,12 +55,12 @@ services:
     networks:
       - disseckill-net
 
-  # ==================== 微服务 ====================
-  user-service:
+  # ==================== 用户服务 (x2 实例，轮询负载均衡) ====================
+  user-service-1:
     build:
       context: ./services/user_service
       dockerfile: Dockerfile
-    container_name: disseckill-user
+    container_name: disseckill-user-1
     ports:
       - "8001:8001"
     env_file:
@@ -73,11 +73,29 @@ services:
     networks:
       - disseckill-net
 
-  goods-service:
+  user-service-2:
+    build:
+      context: ./services/user_service
+      dockerfile: Dockerfile
+    container_name: disseckill-user-2
+    ports:
+      - "8011:8001"
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - disseckill-net
+
+  # ==================== 商品服务 (x2 实例，加权轮询) ====================
+  goods-service-1:
     build:
       context: ./services/goods_service
       dockerfile: Dockerfile
-    container_name: disseckill-goods
+    container_name: disseckill-goods-1
     ports:
       - "8002:8002"
     env_file:
@@ -90,13 +108,50 @@ services:
     networks:
       - disseckill-net
 
-  order-service:
+  goods-service-2:
+    build:
+      context: ./services/goods_service
+      dockerfile: Dockerfile
+    container_name: disseckill-goods-2
+    ports:
+      - "8012:8002"
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - disseckill-net
+
+  # ==================== 订单服务 (x2 实例，最少连接) ====================
+  order-service-1:
     build:
       context: ./services/order_service
       dockerfile: Dockerfile
-    container_name: disseckill-order
+    container_name: disseckill-order-1
     ports:
       - "8003:8003"
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - disseckill-net
+
+  order-service-2:
+    build:
+      context: ./services/order_service
+      dockerfile: Dockerfile
+    container_name: disseckill-order-2
+    ports:
+      - "8013:8003"
     env_file:
       - .env
     depends_on:
@@ -129,11 +184,12 @@ services:
     networks:
       - disseckill-net
 
-  inventory-service:
+  # ==================== 库存服务 (x2 实例，IP Hash) ====================
+  inventory-service-1:
     build:
       context: ./services/inventory_service
       dockerfile: Dockerfile
-    container_name: disseckill-inventory
+    container_name: disseckill-inventory-1
     ports:
       - "8004:8004"
     env_file:
@@ -148,7 +204,26 @@ services:
     networks:
       - disseckill-net
 
-  # ==================== API 网关 ====================
+  inventory-service-2:
+    build:
+      context: ./services/inventory_service
+      dockerfile: Dockerfile
+    container_name: disseckill-inventory-2
+    ports:
+      - "8014:8004"
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - disseckill-net
+
+  # ==================== API 网关 (Nginx 负载均衡 + 动静分离) ====================
   gateway:
     image: nginx:1.25-alpine
     container_name: disseckill-gateway
@@ -156,11 +231,16 @@ services:
       - "80:80"
     volumes:
       - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./gateway/static:/usr/share/nginx/html/static:ro
     depends_on:
-      - user-service
-      - goods-service
-      - order-service
-      - inventory-service
+      - user-service-1
+      - user-service-2
+      - goods-service-1
+      - goods-service-2
+      - order-service-1
+      - order-service-2
+      - inventory-service-1
+      - inventory-service-2
     networks:
       - disseckill-net
 

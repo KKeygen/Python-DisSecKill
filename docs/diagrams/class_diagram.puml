@@ -1,0 +1,193 @@
+@startuml class_diagram
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName Noto Sans CJK SC
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam classAttributeIconSize 0
+
+title 系统类图 — 分布式秒杀系统 (FastAPI + SQLAlchemy)
+
+skinparam package {
+    BackgroundColor #F8F9FA
+    BorderColor #6C757D
+}
+
+package "用户服务 (user_service)" as pkg_user #EBF5FB {
+    class User <<Model>> {
+        +id: int
+        +username: str
+        +password: str
+        +email: str
+        +phone: str
+        +is_active: bool
+        +is_admin: bool
+        +create_time: datetime
+        +update_time: datetime
+    }
+
+    class AuthRouter <<Router>> {
+        +register(req: UserRegister): UserResponse
+        +login(req: UserLogin): TokenResponse
+        +get_profile(token): UserResponse
+        +update_profile(req: UserUpdate): UserResponse
+    }
+
+    class Security <<Util>> {
+        +hash_password(password): str
+        +verify_password(plain, hashed): bool
+        +create_access_token(data): str
+        +get_current_user(token): User
+    }
+}
+
+package "商品服务 (goods_service)" as pkg_goods #E8F8F5 {
+    class Goods <<Model>> {
+        +id: int
+        +category_id: int
+        +name: str
+        +description: str
+        +price: Decimal
+        +is_seckill: bool
+        +seckill_price: Decimal
+        +seckill_start: datetime
+        +seckill_end: datetime
+        +status: int
+    }
+
+    class GoodsCategory <<Model>> {
+        +id: int
+        +name: str
+        +description: str
+        +sort_order: int
+        +is_active: bool
+    }
+
+    class GoodsRouter <<Router>> {
+        +list_goods(page, size, category_id): GoodsListResponse
+        +get_goods(goods_id): GoodsResponse
+        +create_goods(req): GoodsResponse
+        +list_categories(): list[CategoryResponse]
+    }
+
+    class GoodsCacheService <<Service>> {
+        -redis: Redis
+        -CACHE_TTL: int = 300
+        +get_goods_detail(goods_id): dict
+        +invalidate_cache(goods_id): void
+        +cache_null_value(goods_id): void
+        -_random_ttl(base): int
+    }
+}
+
+package "库存服务 (inventory_service)" as pkg_inv #FDEBD0 {
+    class Inventory <<Model>> {
+        +id: int
+        +goods_id: int
+        +stock: int
+        +locked_stock: int
+        +version: int
+    }
+
+    class InventoryRouter <<Router>> {
+        +get_inventory(goods_id): InventoryResponse
+        +deduct_stock(req): DeductResponse
+        +revert_stock(req): DeductResponse
+        +seckill(req): SeckillResponse
+        +init_seckill_stock(goods_id, stock): dict
+    }
+
+    class SeckillEngine <<Core>> {
+        -sold_out_map: dict[int, bool]
+        -LUA_SCRIPT: str
+        +check_local_soldout(goods_id): bool
+        +redis_atomic_deduct(goods_id, user_id): int
+        +publish_mq_message(msg): bool
+        +compensate_rollback(goods_id, user_id): void
+    }
+}
+
+package "订单服务 (order_service)" as pkg_order #FDEDEC {
+    class Order <<Model>> {
+        +id: str
+        +user_id: int
+        +goods_id: int
+        +count: int
+        +total_price: Decimal
+        +order_status: int
+        +is_seckill: bool
+    }
+
+    class SeckillProcessed <<Model>> {
+        +id: int
+        +request_id: str
+        +user_id: int
+        +goods_id: int
+        +order_id: str
+        +status: str
+    }
+
+    class OrderRouter <<Router>> {
+        +create_order(req): OrderResponse
+        +list_orders(page, size): OrderListResponse
+        +get_order(order_id): OrderResponse
+        +check_seckill_result(request_id): dict
+    }
+
+    class SeckillConsumer <<Consumer>> {
+        +start_consuming(): void
+        +process_message(msg): void
+        -_idempotent_check(request_id): bool
+        -_create_seckill_order(data): Order
+        -_optimistic_lock_deduct(goods_id): bool
+        -_compensate_redis(goods_id, user_id): void
+    }
+}
+
+package "公共基础" as pkg_common #F5EEF8 {
+    class Database <<Infra>> {
+        +engine: AsyncEngine
+        +SessionLocal: async_sessionmaker
+        +get_db(): AsyncSession
+    }
+
+    class Settings <<Config>> {
+        +MYSQL_HOST: str
+        +MYSQL_PORT: int
+        +REDIS_HOST: str
+        +REDIS_PORT: int
+        +RABBITMQ_URL: str
+        +JWT_SECRET: str
+        +database_url: str
+        +redis_url: str
+    }
+}
+
+' 关系
+GoodsCategory "1" -- "*" Goods : 包含
+Goods "1" -- "1" Inventory : 对应
+User "1" -- "*" Order : 拥有
+Goods "1" -- "*" Order : 关联
+
+AuthRouter ..> User : 操作
+AuthRouter ..> Security : 依赖
+
+GoodsRouter ..> Goods : 操作
+GoodsRouter ..> GoodsCacheService : 使用缓存
+
+InventoryRouter ..> Inventory : 操作
+InventoryRouter ..> SeckillEngine : 秒杀逻辑
+
+OrderRouter ..> Order : 操作
+SeckillConsumer ..> Order : 创建订单
+SeckillConsumer ..> SeckillProcessed : 幂等校验
+SeckillConsumer ..> Inventory : 乐观锁扣减
+
+Database <.. AuthRouter : 注入
+Database <.. GoodsRouter : 注入
+Database <.. InventoryRouter : 注入
+Database <.. OrderRouter : 注入
+Settings <.. Database : 读取配置
+
+@enduml

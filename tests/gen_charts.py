@@ -13,18 +13,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
-# 设置中文字体
-for name in ["Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", "SimHei"]:
-    matches = fm.findSystemFonts(fontpaths=None, fontext="ttf")
-    for f in matches:
-        try:
-            prop = fm.FontProperties(fname=f)
-            if name.lower() in prop.get_name().lower():
-                plt.rcParams["font.family"] = prop.get_name()
-                break
-        except Exception:
-            continue
+# 从 .ttc 中提取简体中文字体 (face index 2 = Noto Sans CJK SC)
+_SC_OTF = "/tmp/NotoSansCJK-SC-Regular.otf"
+if not os.path.exists(_SC_OTF):
+    from fontTools.ttLib import TTCollection
+    tc = TTCollection("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
+    tc.fonts[2].save(_SC_OTF)
 
+fm.fontManager.addfont(_SC_OTF)
+_CJK_FONT_NAME = fm.FontProperties(fname=_SC_OTF).get_name()
+plt.rcParams["font.family"] = _CJK_FONT_NAME
 plt.rcParams["axes.unicode_minus"] = False
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "docs", "diagrams")

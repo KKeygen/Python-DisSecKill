@@ -21,38 +21,7 @@
 
 ## 1. 系统架构概览
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        客户端 (Web/App)                      │
-└────────────────────────────┬────────────────────────────────┘
-                             │ HTTP/HTTPS
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   API Gateway (Nginx)                        │
-│              负载均衡 / 路由转发 / 限流                        │
-│         /api/user → user_service:8001                        │
-│         /api/goods → goods_service:8002                      │
-│         /api/order → order_service:8003                      │
-│         /api/inventory → inventory_service:8004              │
-└───┬──────────┬──────────┬──────────┬────────────────────────┘
-    │          │          │          │
-    ▼          ▼          ▼          ▼
-┌────────┐┌────────┐┌────────┐┌──────────┐
-│  用户  ││  商品  ││  订单  ││   库存   │
-│  服务  ││  服务  ││  服务  ││   服务   │
-│ :8001  ││ :8002  ││ :8003  ││  :8004   │
-└───┬────┘└───┬────┘└───┬────┘└────┬─────┘
-    │         │         │          │
-    ▼         ▼         ▼          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     数据层                                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                   │
-│  │  MySQL   │  │  Redis   │  │ RabbitMQ │                   │
-│  │ 持久存储 │  │ 缓存/库存│  │ 消息队列 │                    │
-│  │  :3306   │  │  :6379   │  │  :5672   │                   │
-│  └──────────┘  └──────────┘  └──────────┘                   │
-└─────────────────────────────────────────────────────────────┘
-```
+> 完整架构图请参见上方 [系统架构图](diagrams/architecture.png)。
 
 ### 1.1 服务拆分说明
 
@@ -117,72 +86,19 @@
 
 ## 3. 数据库 ER 图
 
-```
-┌──────────────────────┐       ┌──────────────────────────┐
-│       df_user        │       │      df_goods_category   │
-├──────────────────────┤       ├──────────────────────────┤
-│ PK id         BIGINT │       │ PK id           BIGINT   │
-│    username   VARCHAR│       │    name         VARCHAR   │
-│    password   VARCHAR│       │    description  TEXT      │
-│    email      VARCHAR│       │    sort_order   INT       │
-│    phone      VARCHAR│       │    is_active    BOOLEAN   │
-│    is_active  BOOLEAN│       │    create_time  DATETIME  │
-│    is_admin   BOOLEAN│       │    update_time  DATETIME  │
-│    create_time DATETIME      │                          │
-│    update_time DATETIME      └──────────┬───────────────┘
-└──────────┬───────────┘                  │
-           │                              │ 1:N
-           │ 1:N                          │
-           ▼                              ▼
-┌──────────────────────────────────────────────────────┐
-│                     df_goods                          │
-├──────────────────────────────────────────────────────┤
-│ PK id              BIGINT                             │
-│ FK category_id     BIGINT  → df_goods_category.id     │
-│    name            VARCHAR                            │
-│    desc            TEXT                                │
-│    price           DECIMAL(10,2)                      │
-│    unit            VARCHAR                            │
-│    image           VARCHAR                            │
-│    is_seckill      BOOLEAN                            │
-│    seckill_price   DECIMAL(10,2)                      │
-│    seckill_start   DATETIME                           │
-│    seckill_end     DATETIME                           │
-│    status          SMALLINT  (0:下架 1:上架)            │
-│    create_time     DATETIME                           │
-│    update_time     DATETIME                           │
-└──────────┬───────────────────────────────────────────┘
-           │ 1:1
-           ▼
-┌──────────────────────────────────────────────────────┐
-│                   df_inventory                        │
-├──────────────────────────────────────────────────────┤
-│ PK id              BIGINT                             │
-│ FK goods_id        BIGINT  → df_goods.id (UNIQUE)     │
-│    stock           INT                                │
-│    locked_stock    INT   (已锁定待支付)                  │
-│    version         INT   (乐观锁版本号)                  │
-│    create_time     DATETIME                           │
-│    update_time     DATETIME                           │
-└──────────────────────────────────────────────────────┘
+> 完整 ER 图请参见上方 [数据库ER图](diagrams/er_diagram.png)。
 
-┌──────────────────────────────────────────────────────┐
-│                   df_order                            │
-├──────────────────────────────────────────────────────┤
-│ PK id              VARCHAR(32) (订单号)                │
-│ FK user_id         BIGINT  → df_user.id               │
-│ FK goods_id        BIGINT  → df_goods.id              │
-│    count           INT                                │
-│    total_price     DECIMAL(10,2)                      │
-│    pay_method      SMALLINT                           │
-│    order_status    SMALLINT (1待支付 2待发货 3已完成...)  │
-│    address         VARCHAR                            │
-│    trade_no        VARCHAR                            │
-│    is_seckill      BOOLEAN                            │
-│    create_time     DATETIME                           │
-│    update_time     DATETIME                           │
-└──────────────────────────────────────────────────────┘
-```
+以下为各表主要字段说明：
+
+**df_user**: id, username, password, email, phone, is_active, is_admin, create_time, update_time
+
+**df_goods_category**: id, name, description, sort_order, is_active, create_time, update_time
+
+**df_goods**: id, category_id(FK), name, desc, price, unit, image, is_seckill, seckill_price, seckill_start, seckill_end, status, create_time, update_time
+
+**df_inventory**: id, goods_id(FK, UNIQUE), stock, locked_stock, version(乐观锁), create_time, update_time
+
+**df_order**: id(订单号), user_id(FK), goods_id(FK), count, total_price, pay_method, order_status, address, trade_no, is_seckill, create_time, update_time
 
 ### 3.1 表关系说明
 
@@ -327,13 +243,9 @@ locust -f tests/locustfile.py --host=http://localhost --headless \
 
 将前端静态资源（HTML/CSS/JS/图片）和后端 API 请求通过 Nginx 分离处理：
 
-```
-客户端请求
-    │
-    ├── /api/*     →  反向代理到后端微服务（动态请求）
-    ├── /static/*  →  Nginx直接返回静态文件（零后端开销）
-    └── /          →  Nginx返回 index.html（SPA入口）
-```
+- `/api/*` — 反向代理到后端微服务（动态请求）
+- `/static/*` — Nginx 直接返回静态文件（零后端开销）
+- `/` — Nginx 返回 `index.html`（SPA 入口）
 
 ### 7.2 Nginx 配置
 
@@ -461,19 +373,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "800x"]
 
 ### 9.2 Docker Compose 编排
 
-```
-┌─ 基础设施 ─────────────────────────────────────────────┐
-│  MySQL 8.0 | Redis 7 | RabbitMQ 3.12                   │
-├─ 微服务层 ─────────────────────────────────────────────┤
-│  user-service x2 | goods-service x2                     │
-│  order-service x2 | inventory-service x2                │
-│  seckill-consumer x1                                    │
-├─ 网关层 ───────────────────────────────────────────────┤
-│  Nginx (80端口) → 负载均衡/动静分离/限流                  │
-├─ 前端 ─────────────────────────────────────────────────┤
-│  Vue 3 SPA (Nginx 3000端口)                              │
-└─────────────────────────────────────────────────────────┘
-```
+| 层级 | 组件 |
+|------|------|
+| 基础设施 | MySQL 8.0、Redis 7、RabbitMQ 3.12 |
+| 微服务层 | user-service ×2、goods-service ×2、order-service ×2、inventory-service ×2、seckill-consumer ×1 |
+| 网关层 | Nginx（80 端口）— 负载均衡 / 动静分离 / 限流 |
+| 前端 | Vue 3 SPA（Nginx 内部容器） |
 
 启动命令：
 ```bash

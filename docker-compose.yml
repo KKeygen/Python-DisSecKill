@@ -231,7 +231,6 @@ services:
       - "80:80"
     volumes:
       - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./gateway/static:/usr/share/nginx/html/static:ro
     depends_on:
       - user-service-1
       - user-service-2
@@ -241,6 +240,7 @@ services:
       - order-service-2
       - inventory-service-1
       - inventory-service-2
+      - frontend
     networks:
       - disseckill-net
 
@@ -250,10 +250,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: disseckill-frontend
-    ports:
-      - "3000:80"
-    depends_on:
-      - gateway
     networks:
       - disseckill-net
 

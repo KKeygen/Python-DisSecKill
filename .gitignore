@@ -35,3 +35,13 @@ misc/
 
 # PlantUML JAR (大文件，不纳入版本控制)
 docs/diagrams/plantuml.jar
+
+# LaTeX 编译产物
+docs/tex/*.aux
+docs/tex/*.log
+docs/tex/*.out
+docs/tex/*.toc
+docs/tex/*.fls
+docs/tex/*.fdb_latexmk
+docs/tex/*.synctex.gz
+docs/tex/*.xdv

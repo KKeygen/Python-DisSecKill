@@ -66,17 +66,17 @@ class StaticFileUser(HttpUser):
     @task(5)
     @tag("static")
     def fetch_css(self):
-        self.client.get("/static/css/style.css", name="/static/css/style.css")
+        self.client.get("/assets/index-IxvmssXE.css", name="/assets/*.css")
 
     @task(3)
     @tag("static")
     def fetch_js(self):
-        self.client.get("/static/js/app.js", name="/static/js/app.js")
+        self.client.get("/assets/index-BUhM6JgB.js", name="/assets/*.js")
 
     @task(2)
     @tag("static")
-    def fetch_html(self):
-        self.client.get("/static/index.html", name="/static/index.html")
+    def fetch_svg(self):
+        self.client.get("/vite.svg", name="/vite.svg")
 
 
 # ==================== API接口压测（动态请求对比） ====================

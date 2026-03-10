@@ -31,7 +31,7 @@ async def run_test(host: str, stock: int, users: int):
     # Step 1: 初始化库存
     print("[1/5] 初始化秒杀库存...")
     async with httpx.AsyncClient(timeout=10) as c:
-        resp = await c.post(f"{host}/api/inventory/init/1", json={"stock": stock})
+        resp = await c.post(f"{host}/api/inventory/init/1", json={"stock": stock, "seckill_price": 99.9})
         assert resp.status_code == 200, f"初始化失败: {resp.text}"
     print(f"      库存已设置为 {stock}")
 
@@ -94,7 +94,7 @@ async def run_test(host: str, stock: int, users: int):
     print(f"\n[4/5] 验证 Redis 库存...")
     try:
         import redis
-        r = redis.Redis(host=host.replace("http://", "").split(":")[0], port=6379, decode_responses=True)
+        r = redis.Redis(host="localhost", port=6379, db=2, decode_responses=True)
         redis_stock = r.get("seckill:stock:1")
         redis_users = r.scard("seckill:users:1")
         print(f"      Redis 剩余库存: {redis_stock}")

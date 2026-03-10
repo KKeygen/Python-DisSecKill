@@ -1,0 +1,33 @@
+.github/
+ref/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+*.egg
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Docker volumes
+mysql_data/
+redis_data/
+rabbitmq_data/
+
+# OS
+.DS_Store
+Thumbs.db

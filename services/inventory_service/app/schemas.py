@@ -30,3 +30,4 @@ class SeckillResponse(BaseModel):
 
 class InitSeckillRequest(BaseModel):
     stock: int = Field(..., ge=0)
+    seckill_price: float = Field(0.0, ge=0)

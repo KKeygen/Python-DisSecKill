@@ -16,11 +16,25 @@
     </div>
 
     <!-- 商品网格 -->
-    <div class="goods-grid">
+    <div v-if="loading" class="skeleton-grid">
+      <div v-for="i in 8" :key="i" class="skeleton-card">
+        <div class="skeleton-img shimmer"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-line w60 shimmer"></div>
+          <div class="skeleton-line w80 shimmer"></div>
+          <div class="skeleton-line w40 shimmer"></div>
+        </div>
+      </div>
+    </div>
+
+    <div v-else class="goods-grid">
       <div v-for="item in goods" :key="item.id" class="goods-card" @click="$router.push(`/goods/${item.id}`)">
         <div class="goods-img">
           <span v-if="item.is_seckill" class="seckill-badge">秒杀</span>
-          <div class="img-placeholder">📦</div>
+          <img v-if="item.image" :src="item.image" :alt="item.name" class="goods-cover" loading="lazy" />
+          <div v-else class="img-gradient" :style="{ background: gradientFor(item.id) }">
+            <span class="img-initial">{{ item.name.charAt(0) }}</span>
+          </div>
         </div>
         <div class="goods-info">
           <h3 class="goods-name">{{ item.name }}</h3>
@@ -33,7 +47,7 @@
       </div>
     </div>
 
-    <p v-if="goods.length === 0" class="empty-text">暂无商品数据</p>
+    <p v-if="!loading && goods.length === 0" class="empty-text">暂无商品数据</p>
   </div>
 </template>
 
@@ -44,12 +58,28 @@ import { goodsApi } from '../api'
 interface Category { id: number; name: string }
 interface GoodsItem {
   id: number; name: string; desc: string | null; price: number
-  is_seckill: boolean; seckill_price: number | null
+  image: string | null; is_seckill: boolean; seckill_price: number | null
 }
 
 const categories = ref<Category[]>([])
 const goods = ref<GoodsItem[]>([])
 const selectedCategory = ref<number | null>(null)
+const loading = ref(false)
+
+// 根据商品ID生成稳定的渐变色作为图片占位
+const gradients = [
+  'linear-gradient(135deg, #667eea, #764ba2)',
+  'linear-gradient(135deg, #f093fb, #f5576c)',
+  'linear-gradient(135deg, #4facfe, #00f2fe)',
+  'linear-gradient(135deg, #43e97b, #38f9d7)',
+  'linear-gradient(135deg, #fa709a, #fee140)',
+  'linear-gradient(135deg, #a18cd1, #fbc2eb)',
+  'linear-gradient(135deg, #fccb90, #d57eeb)',
+  'linear-gradient(135deg, #e0c3fc, #8ec5fc)',
+]
+function gradientFor(id: number) {
+  return gradients[id % gradients.length]
+}
 
 async function loadCategories() {
   try {
@@ -59,12 +89,17 @@ async function loadCategories() {
 }
 
 async function loadGoods() {
+  loading.value = true
   try {
     const params: any = { page: 1, size: 50 }
     if (selectedCategory.value) params.category_id = selectedCategory.value
     const res = await goodsApi.list(params)
     goods.value = res.data.items
-  } catch { goods.value = [] }
+  } catch {
+    goods.value = []
+  } finally {
+    loading.value = false
+  }
 }
 
 watch(selectedCategory, loadGoods)

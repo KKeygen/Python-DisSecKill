@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         return (
             f"mysql+aiomysql://root:{self.MYSQL_ROOT_PASSWORD}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+            f"?charset=utf8mb4"
         )
 
     @property

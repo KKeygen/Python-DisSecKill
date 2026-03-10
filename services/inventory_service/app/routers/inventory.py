@@ -168,10 +168,16 @@ async def seckill(req: SeckillRequest):
         return SeckillResponse(success=False, message="库存不足，秒杀结束")
 
     # 第3层：投递MQ消息，异步创建订单
+    # 从 Redis 缓存中获取秒杀价格
+    seckill_info_key = f"seckill:info:{req.goods_id}"
+    seckill_price = await r.hget(seckill_info_key, "seckill_price")
+    seckill_price = float(seckill_price) if seckill_price else 0.0
+
     request_id = uuid.uuid4().hex
     message_body = {
         "user_id": req.user_id,
         "goods_id": req.goods_id,
+        "seckill_price": seckill_price,
         "request_id": request_id,
         "timestamp": time.time(),
     }
@@ -202,9 +208,12 @@ async def init_seckill_stock(goods_id: int, req: InitSeckillRequest):
     r = await get_redis()
     stock_key = f"seckill:stock:{goods_id}"
     user_set_key = f"seckill:users:{goods_id}"
+    info_key = f"seckill:info:{goods_id}"
 
     await r.set(stock_key, req.stock)
     await r.delete(user_set_key)
+    # 存储秒杀价格信息
+    await r.hset(info_key, mapping={"seckill_price": str(req.seckill_price)})
 
     # 清除本地售罄标记
     sold_out_map.pop(goods_id, None)

@@ -158,12 +158,13 @@ async def process_seckill_message(message: aio_pika.abc.AbstractIncomingMessage)
 
                 # 创建订单
                 order_id = generate_order_id()
+                seckill_price = float(data.get("seckill_price", 0))
                 order = Order(
                     id=order_id,
                     user_id=user_id,
                     goods_id=goods_id,
                     count=1,
-                    total_price=0,  # 实际应从消息或商品服务获取秒杀价
+                    total_price=seckill_price,
                     is_seckill=True,
                     order_status=1,  # 待支付
                 )

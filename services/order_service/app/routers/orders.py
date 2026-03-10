@@ -37,20 +37,26 @@ async def create_order(
     db: AsyncSession = Depends(get_db),
 ):
     """创建订单（同步扣减库存）"""
-    # 调用库存服务扣减库存
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # 查询商品价格
+        goods_resp = await client.get(
+            f"{settings.GOODS_SERVICE_URL}/api/goods/{req.goods_id}",
+        )
+        if goods_resp.status_code != 200:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="商品不存在")
+        goods_data = goods_resp.json()
+        unit_price = float(goods_data["price"])
+
+        # 调用库存服务扣减库存
         resp = await client.post(
             f"{settings.INVENTORY_SERVICE_URL}/api/inventory/deduct",
             json={"goods_id": req.goods_id, "count": req.count},
-            timeout=10.0,
         )
     if resp.status_code != 200 or not resp.json().get("success"):
         detail = resp.json().get("detail", "库存不足")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
 
-    inv_data = resp.json()
-    # 此处简化价格计算：实际应从商品服务获取价格
-    total_price = req.count * 0  # 占位，需联动商品服务
+    total_price = req.count * unit_price
 
     order = Order(
         id=_generate_order_id(),

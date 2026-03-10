@@ -15,12 +15,15 @@ class Settings(BaseSettings):
     RABBITMQ_DEFAULT_PASS: str = "guest"
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
+    INVENTORY_SERVICE_URL: str = "http://inventory-service-1:8004"
+    GOODS_SERVICE_URL: str = "http://goods-service-1:8002"
 
     @property
     def database_url(self) -> str:
         return (
             f"mysql+aiomysql://root:{self.MYSQL_ROOT_PASSWORD}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+            f"?charset=utf8mb4"
         )
 
     @property

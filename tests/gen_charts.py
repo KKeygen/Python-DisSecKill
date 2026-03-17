@@ -1,39 +1,54 @@
-"""
-生成压测结果可视化图表，输出到 docs/diagrams/ 供 LaTeX 引用。
-图表1: 各场景 TPS 对比柱状图
-图表2: 各场景延迟分位数对比（分组柱状图）
-图表3: 秒杀接口延迟时间序列（从 stats_history.csv）
-"""
+"""Generate charts from k6 results into docs/diagrams/."""
 
-import csv
+import json
 import os
+from collections import defaultdict
+from datetime import datetime
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 
-# 从 .ttc 中提取简体中文字体 (face index 2 = Noto Sans CJK SC)
-_SC_OTF = "/tmp/NotoSansCJK-SC-Regular.otf"
-if not os.path.exists(_SC_OTF):
-    from fontTools.ttLib import TTCollection
-    tc = TTCollection("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
-    tc.fonts[2].save(_SC_OTF)
+try:
+    import matplotlib.font_manager as fm
 
-fm.fontManager.addfont(_SC_OTF)
-_CJK_FONT_NAME = fm.FontProperties(fname=_SC_OTF).get_name()
-plt.rcParams["font.family"] = _CJK_FONT_NAME
+    font_candidates = [
+        "Microsoft YaHei",
+        "SimHei",
+        "Noto Sans CJK SC",
+        "WenQuanYi Zen Hei",
+    ]
+    for name in font_candidates:
+        try:
+            fm.findfont(name, fallback_to_default=False)
+            plt.rcParams["font.family"] = name
+            break
+        except Exception:
+            continue
+except Exception:
+    pass
+
 plt.rcParams["axes.unicode_minus"] = False
 
-OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "docs", "diagrams")
+BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
+OUT_DIR = os.path.join(BASE_DIR, "docs", "diagrams")
+RESULTS_DIR = os.path.join(BASE_DIR, "results")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# ======================== 数据 ========================
+
+def load_json(path: str):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+summary = load_json(os.path.join(RESULTS_DIR, "k6_summary.json"))
+
 scenarios = ["静态资源", "动态API", "秒杀接口"]
-tps_vals = [458, 579, 597]
-p50 = [220, 100, 87]
-p95 = [430, 330, 280]
-p99 = [590, 500, 2500]
+tps_vals = [summary["static"]["tps"], summary["api"]["tps"], summary["seckill"]["tps"]]
+p50 = [summary["static"]["p50"], summary["api"]["p50"], summary["seckill"]["p50"]]
+p95 = [summary["static"]["p95"], summary["api"]["p95"], summary["seckill"]["p95"]]
+p99 = [summary["static"]["p99"], summary["api"]["p99"], summary["seckill"]["p99"]]
 
 colors_tps = ["#4A90D9", "#5CB85C", "#D9534F"]
 colors_lat = ["#4A90D9", "#F0AD4E", "#D9534F"]
@@ -45,7 +60,7 @@ for bar, val in zip(bars, tps_vals):
     ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 12,
             str(val), ha="center", va="bottom", fontsize=13, fontweight="bold")
 ax.set_ylabel("请求/秒 (TPS)", fontsize=12)
-ax.set_title("各场景吞吐量对比（200~500并发, 30s）", fontsize=14, fontweight="bold")
+ax.set_title("各场景吞吐量对比", fontsize=14, fontweight="bold")
 ax.set_ylim(0, max(tps_vals) * 1.18)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
@@ -86,27 +101,37 @@ plt.close(fig)
 print("✅ chart_latency.png")
 
 # ======================== 图3: 秒杀接口时间序列 ========================
-history_file = os.path.join(os.path.dirname(__file__), "..", "results", "seckill_stats_history.csv")
-if os.path.exists(history_file):
-    timestamps = []
-    rps_list = []
-    avg_list = []
-    with open(history_file, "r") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row.get("Name", "").strip() in ("Aggregated", "/api/inventory/seckill", ""):
-                ts = float(row["Timestamp"])
-                rps = float(row["Requests/s"])
-                avg_str = row.get("Total Average Response Time", "0")
-                avg = float(avg_str) if avg_str and avg_str != "N/A" else 0
-                timestamps.append(ts)
-                rps_list.append(rps)
-                avg_list.append(avg)
+raw_file = os.path.join(RESULTS_DIR, "k6_seckill_raw.json")
+if os.path.exists(raw_file):
+    buckets = defaultdict(lambda: {"count": 0, "sum_dur": 0.0})
+    with open(raw_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if item.get("type") != "Point":
+                continue
+            if item.get("metric") != "http_req_duration":
+                continue
+            data = item.get("data", {})
+            t = data.get("time")
+            v = data.get("value")
+            if t is None or v is None:
+                continue
+            sec = int(datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp())
+            buckets[sec]["count"] += 1
+            buckets[sec]["sum_dur"] += float(v)
 
-    if timestamps:
-        # 将时间戳转为相对秒
-        t0 = timestamps[0]
-        t_rel = [(t - t0) for t in timestamps]
+    if buckets:
+        secs = sorted(buckets.keys())
+        t0 = secs[0]
+        t_rel = [s - t0 for s in secs]
+        rps_list = [buckets[s]["count"] for s in secs]
+        avg_list = [buckets[s]["sum_dur"] / max(1, buckets[s]["count"]) for s in secs]
 
         fig, ax1 = plt.subplots(figsize=(9, 4.5))
         color_rps = "#4A90D9"
@@ -122,7 +147,7 @@ if os.path.exists(history_file):
         ax2.set_ylabel("平均延迟 (ms)", color=color_lat, fontsize=11)
         ax2.tick_params(axis="y", labelcolor=color_lat)
 
-        ax1.set_title("秒杀接口 TPS 与延迟时间序列（500并发, 30s）", fontsize=13, fontweight="bold")
+        ax1.set_title("秒杀接口 TPS 与延迟时间序列", fontsize=13, fontweight="bold")
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=10)
@@ -133,8 +158,8 @@ if os.path.exists(history_file):
         plt.close(fig)
         print("✅ chart_seckill_ts.png")
     else:
-        print("⚠️ seckill_stats_history.csv 无有效数据行")
+        print("⚠️ k6_seckill_raw.json 无有效点")
 else:
-    print("⚠️ seckill_stats_history.csv 不存在，跳过时间序列图")
+    print("⚠️ k6_seckill_raw.json 不存在，跳过时间序列图")
 
 print("\n所有图表已生成到", OUT_DIR)

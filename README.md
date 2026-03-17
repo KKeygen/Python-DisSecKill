@@ -143,6 +143,23 @@ curl http://localhost:8001/api/user/profile \
 
 ## 压力测试
 
+推荐使用 k6（现代化、低资源开销、结果结构化），Locust 保留用于复杂用户行为建模。
+
+### k6 秒杀压测（推荐）
+
+```bash
+# 一键运行（自动初始化库存 + 执行压测 + 导出 summary json）
+powershell -ExecutionPolicy Bypass -File tests/run_k6.ps1 \
+  -K6BaseUrl http://host.docker.internal \
+  -GoodsId 1 \
+  -Stock 100 \
+  -Profile smoke \
+  -OutPrefix results/k6_seckill_latest
+
+# 结果文件
+# results/k6_seckill_latest.json
+```
+
 使用 Locust (Python版压力测试工具) 替代 JMeter：
 
 ```bash

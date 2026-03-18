@@ -1,25 +1,46 @@
-services:
+﻿services:
   # ==================== 基础设施 ====================
   mysql:
-    image: mysql:8.0
+    image: bitnami/mariadb:latest
     container_name: disseckill-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-disseckill_root_2026}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-disseckill}
-      MYSQL_CHARSET: utf8mb4
+      MARIADB_REPLICATION_MODE: master
+      MARIADB_REPLICATION_USER: repl_user
+      MARIADB_REPLICATION_PASSWORD: repl_password
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-disseckill_root_2026}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-disseckill}
     ports:
       - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mysql_data:/bitnami/mariadb/data
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
-    command: >-
-      --default-authentication-plugin=mysql_native_password
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --init-connect='SET NAMES utf8mb4'
-      --skip-character-set-client-handshake
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MARIADB_ROOT_PASSWORD:-disseckill_root_2026}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - disseckill-net
+
+  mysql-slave:
+    image: bitnami/mariadb:latest
+    container_name: disseckill-mysql-slave
+    environment:
+      MARIADB_REPLICATION_MODE: slave
+      MARIADB_REPLICATION_USER: repl_user
+      MARIADB_REPLICATION_PASSWORD: repl_password
+      MARIADB_MASTER_HOST: mysql
+      MARIADB_MASTER_PORT_NUMBER: 3306
+      MARIADB_MASTER_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-disseckill_root_2026}
+    ports:
+      - "3307:3306"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - mysql_slave_data:/bitnami/mariadb/data
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MARIADB_ROOT_PASSWORD:-disseckill_root_2026}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -258,10 +279,32 @@ services:
     networks:
       - disseckill-net
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.10
+    container_name: disseckill-es
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-f", "http://localhost:9200/_cat/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - disseckill-net
+
 volumes:
   mysql_data:
+  mysql_slave_data:
   redis_data:
   rabbitmq_data:
+  es_data:
 
 networks:
   disseckill-net:

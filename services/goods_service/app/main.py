@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+﻿from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from app.routers.goods import router as goods_router
@@ -6,6 +6,12 @@ from app.routers.goods import router as goods_router
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    from app.search import init_es_index
+    try:
+        await init_es_index()
+    except Exception as e:
+        print("Failed to initialize ES", e)
+
     yield
 
 
@@ -22,3 +28,4 @@ app.include_router(goods_router, prefix="/api/goods", tags=["商品"])
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "goods-service"}
+

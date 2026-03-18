@@ -5,3 +5,5 @@ aiomysql==0.2.0
 pydantic==2.7.4
 pydantic-settings==2.3.4
 redis[hiredis]==5.0.7
+
+elasticsearch[async]>=8.14.0

@@ -45,3 +45,11 @@ docs/tex/*.fls
 docs/tex/*.fdb_latexmk
 docs/tex/*.synctex.gz
 docs/tex/*.xdv
+
+# Source files to keep out of VCS
+docs/tex/main.tex
+docs/tex/whucsreport.cls
+
+# Generated / runtime artifacts
+results/
+.vite/

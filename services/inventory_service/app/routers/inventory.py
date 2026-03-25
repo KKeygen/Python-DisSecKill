@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
-import aio_pika
+from aiokafka import AIOKafkaProducer
 
 from app.config import get_settings
 from app.database import get_db
@@ -34,36 +34,26 @@ async def get_redis() -> aioredis.Redis:
     return _redis_pool
 
 
-# ==================== RabbitMQ 连接 ====================
-_mq_connection: aio_pika.abc.AbstractRobustConnection | None = None
-_mq_channel: aio_pika.abc.AbstractChannel | None = None
+# ==================== Kafka 生产者 ====================
+_kafka_producer: AIOKafkaProducer | None = None
 
-SECKILL_QUEUE = "seckill_order_queue"
-SECKILL_DLX = "seckill_dlx"
-SECKILL_DLQ = "seckill_dlq"
+SECKILL_TOPIC = "seckill_order_topic"
+SECKILL_DLQ_TOPIC = "seckill_order_dlq"
 
 
-async def get_mq_channel() -> aio_pika.abc.AbstractChannel:
-    global _mq_connection, _mq_channel
-    if _mq_connection is None or _mq_connection.is_closed:
-        _mq_connection = await aio_pika.connect_robust(settings.rabbitmq_url)
-    if _mq_channel is None or _mq_channel.is_closed:
-        _mq_channel = await _mq_connection.channel()
-        # 声明死信交换机和队列
-        dlx = await _mq_channel.declare_exchange(SECKILL_DLX, aio_pika.ExchangeType.DIRECT, durable=True)
-        dlq = await _mq_channel.declare_queue(SECKILL_DLQ, durable=True)
-        await dlq.bind(dlx, routing_key=SECKILL_DLQ)
-        # 声明秒杀订单队列（绑定死信交换机）
-        await _mq_channel.declare_queue(
-            SECKILL_QUEUE,
-            durable=True,
-            arguments={
-                "x-dead-letter-exchange": SECKILL_DLX,
-                "x-dead-letter-routing-key": SECKILL_DLQ,
-                "x-message-ttl": 30000,
-            },
+async def get_kafka_producer() -> AIOKafkaProducer:
+    global _kafka_producer
+    if _kafka_producer is None:
+        _kafka_producer = AIOKafkaProducer(
+            bootstrap_servers=settings.kafka_url,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            key_serializer=lambda k: k.encode('utf-8') if k else None,
+            enable_idempotence=True,  # 保证幂等性
+            acks='all',  # 等待所有副本确认
+            retries=3,   # 重试次数
         )
-    return _mq_channel
+        await _kafka_producer.start()
+    return _kafka_producer
 
 
 # ==================== 本地售罄标记 ====================
@@ -183,17 +173,14 @@ async def seckill(req: SeckillRequest):
     }
 
     try:
-        channel = await get_mq_channel()
-        await channel.default_exchange.publish(
-            aio_pika.Message(
-                body=json.dumps(message_body).encode(),
-                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                message_id=request_id,
-            ),
-            routing_key=SECKILL_QUEUE,
+        producer = await get_kafka_producer()
+        await producer.send(
+            topic=SECKILL_TOPIC,
+            key=request_id,  # 使用 request_id 作为 partition key
+            value=message_body,
         )
     except Exception:
-        # MQ投递失败 → 补偿回滚Redis
+        # Kafka投递失败 → 补偿回滚Redis
         await r.incr(stock_key)
         await r.srem(user_set_key, str(req.user_id))
         sold_out_map.pop(req.goods_id, None)

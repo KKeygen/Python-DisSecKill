@@ -5,4 +5,4 @@ aiomysql==0.2.0
 pydantic==2.7.4
 pydantic-settings==2.3.4
 redis[hiredis]==5.0.7
-aio-pika==9.4.1
+aiokafka==0.11.0

@@ -1,11 +1,21 @@
--- 分布式秒杀系统数据库初始化脚本
--- Database: disseckill
+-- 分布式秒杀系统数据库初始化脚本（含分库分表）
+-- Database: disseckill + 2个订单分片库
 -- 编码: UTF-8 / utf8mb4
 
 SET NAMES utf8mb4;
 SET CHARACTER SET utf8mb4;
 
+-- ===================== 主库：用户、商品、分类、库存 =====================
 CREATE DATABASE IF NOT EXISTS disseckill
+    DEFAULT CHARACTER SET utf8mb4
+    DEFAULT COLLATE utf8mb4_unicode_ci;
+
+-- ===================== 订单分片库 =====================
+CREATE DATABASE IF NOT EXISTS disseckill_order_0
+    DEFAULT CHARACTER SET utf8mb4
+    DEFAULT COLLATE utf8mb4_unicode_ci;
+
+CREATE DATABASE IF NOT EXISTS disseckill_order_1
     DEFAULT CHARACTER SET utf8mb4
     DEFAULT COLLATE utf8mb4_unicode_ci;
 
@@ -72,9 +82,13 @@ CREATE TABLE IF NOT EXISTS df_inventory (
     INDEX idx_goods (goods_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ===================== 订单表 =====================
-CREATE TABLE IF NOT EXISTS df_order (
-    id VARCHAR(32) PRIMARY KEY COMMENT '订单号',
+-- ===================== 订单表分片（2库×2表） =====================
+
+-- 订单分片库0：用户ID为偶数
+USE disseckill_order_0;
+
+CREATE TABLE IF NOT EXISTS df_order_0 (
+    id BIGINT PRIMARY KEY COMMENT '订单ID（雪花算法+基因法）',
     user_id BIGINT NOT NULL,
     goods_id BIGINT NOT NULL,
     count INT NOT NULL DEFAULT 1,
@@ -86,11 +100,70 @@ CREATE TABLE IF NOT EXISTS df_order (
     is_seckill BOOLEAN NOT NULL DEFAULT FALSE,
     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    -- 微服务架构下不使用跨服务FK，通过应用层保证引用完整性
     INDEX idx_user (user_id),
     INDEX idx_status (order_status),
     INDEX idx_create_time (create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单表分片0-0';
+
+CREATE TABLE IF NOT EXISTS df_order_1 (
+    id BIGINT PRIMARY KEY COMMENT '订单ID（雪花算法+基因法）',
+    user_id BIGINT NOT NULL,
+    goods_id BIGINT NOT NULL,
+    count INT NOT NULL DEFAULT 1,
+    total_price DECIMAL(10, 2) NOT NULL,
+    pay_method SMALLINT NOT NULL DEFAULT 3 COMMENT '1:货到付款 2:微信 3:支付宝 4:银联',
+    order_status SMALLINT NOT NULL DEFAULT 1 COMMENT '1:待支付 2:待发货 3:待收货 4:待评价 5:已完成 6:已取消',
+    address VARCHAR(256) DEFAULT NULL,
+    trade_no VARCHAR(64) DEFAULT NULL,
+    is_seckill BOOLEAN NOT NULL DEFAULT FALSE,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_user (user_id),
+    INDEX idx_status (order_status),
+    INDEX idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单表分片0-1';
+
+-- 订单分片库1：用户ID为奇数
+USE disseckill_order_1;
+
+CREATE TABLE IF NOT EXISTS df_order_0 (
+    id BIGINT PRIMARY KEY COMMENT '订单ID（雪花算法+基因法）',
+    user_id BIGINT NOT NULL,
+    goods_id BIGINT NOT NULL,
+    count INT NOT NULL DEFAULT 1,
+    total_price DECIMAL(10, 2) NOT NULL,
+    pay_method SMALLINT NOT NULL DEFAULT 3 COMMENT '1:货到付款 2:微信 3:支付宝 4:银联',
+    order_status SMALLINT NOT NULL DEFAULT 1 COMMENT '1:待支付 2:待发货 3:待收货 4:待评价 5:已完成 6:已取消',
+    address VARCHAR(256) DEFAULT NULL,
+    trade_no VARCHAR(64) DEFAULT NULL,
+    is_seckill BOOLEAN NOT NULL DEFAULT FALSE,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_user (user_id),
+    INDEX idx_status (order_status),
+    INDEX idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单表分片1-0';
+
+CREATE TABLE IF NOT EXISTS df_order_1 (
+    id BIGINT PRIMARY KEY COMMENT '订单ID（雪花算法+基因法）',
+    user_id BIGINT NOT NULL,
+    goods_id BIGINT NOT NULL,
+    count INT NOT NULL DEFAULT 1,
+    total_price DECIMAL(10, 2) NOT NULL,
+    pay_method SMALLINT NOT NULL DEFAULT 3 COMMENT '1:货到付款 2:微信 3:支付宝 4:银联',
+    order_status SMALLINT NOT NULL DEFAULT 1 COMMENT '1:待支付 2:待发货 3:待收货 4:待评价 5:已完成 6:已取消',
+    address VARCHAR(256) DEFAULT NULL,
+    trade_no VARCHAR(64) DEFAULT NULL,
+    is_seckill BOOLEAN NOT NULL DEFAULT FALSE,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_user (user_id),
+    INDEX idx_status (order_status),
+    INDEX idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单表分片1-1';
+
+-- 切回主库
+USE disseckill;
 
 -- ===================== 初始分类数据 =====================
 INSERT INTO df_goods_category (name, description, sort_order) VALUES
@@ -171,10 +244,21 @@ INSERT INTO df_inventory (goods_id, stock, locked_stock, version) VALUES
 (26, 200, 0, 0),  -- 南极人四件套 (秒杀)
 (27, 350, 0, 0);  -- 飞利浦电动牙刷
 
--- ===================== 秒杀幂等去重表 =====================
+-- ===================== 秒杀幂等去重表（分布式） =====================
+-- 幂等表存储在每个订单分片库中
+USE disseckill_order_0;
 CREATE TABLE IF NOT EXISTS df_seckill_processed (
     request_id VARCHAR(36) PRIMARY KEY COMMENT '幂等键(UUID)',
-    order_id VARCHAR(32) NOT NULL,
+    order_id BIGINT NOT NULL COMMENT '订单ID',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_order (order_id),
+    INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+USE disseckill_order_1;
+CREATE TABLE IF NOT EXISTS df_seckill_processed (
+    request_id VARCHAR(36) PRIMARY KEY COMMENT '幂等键(UUID)',
+    order_id BIGINT NOT NULL COMMENT '订单ID',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_order (order_id),
     INDEX idx_created (created_at)

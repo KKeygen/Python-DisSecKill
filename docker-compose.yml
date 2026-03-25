@@ -1,7 +1,7 @@
 ﻿services:
   # ==================== 基础设施 ====================
   mysql:
-    image: bitnami/mariadb:latest
+    image: docker.snakekiss.com/bitnami/mariadb:latest
     container_name: disseckill-mysql
     environment:
       MARIADB_REPLICATION_MODE: master
@@ -23,7 +23,7 @@
       - disseckill-net
 
   mysql-slave:
-    image: bitnami/mariadb:latest
+    image: docker.snakekiss.com/bitnami/mariadb:latest
     container_name: disseckill-mysql-slave
     environment:
       MARIADB_REPLICATION_MODE: slave
@@ -48,7 +48,7 @@
       - disseckill-net
 
   redis:
-    image: redis:7-alpine
+    image: docker.snakekiss.com/library/redis:7-alpine
     container_name: disseckill-redis
     ports:
       - "6379:6379"
@@ -62,19 +62,32 @@
     networks:
       - disseckill-net
 
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: disseckill-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+  zookeeper:
+    image: docker.snakekiss.com/library/zookeeper:3.9
+    container_name: disseckill-zookeeper
     ports:
-      - "5672:5672"
-      - "16672:15672"
+      - "2181:2181"
+    networks:
+      - disseckill-net
+
+  kafka:
+    image: docker.snakekiss.com/wurstmeister/kafka:2.13-2.8.1
+    container_name: disseckill-kafka
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:9092,OUTSIDE://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_LISTENERS: INSIDE://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_NUM_PARTITIONS: 4
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
     volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
+      - kafka_data:/bitnami/kafka
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -166,8 +179,8 @@
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      kafka:
+        condition: service_started
     networks:
       - disseckill-net
 
@@ -185,8 +198,8 @@
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      kafka:
+        condition: service_started
     networks:
       - disseckill-net
 
@@ -204,8 +217,8 @@
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      kafka:
+        condition: service_started
     restart: on-failure
     networks:
       - disseckill-net
@@ -225,8 +238,8 @@
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      kafka:
+        condition: service_started
     networks:
       - disseckill-net
 
@@ -244,14 +257,14 @@
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      kafka:
+        condition: service_started
     networks:
       - disseckill-net
 
   # ==================== API 网关 (Nginx 负载均衡 + 动静分离) ====================
   gateway:
-    image: nginx:1.25-alpine
+    image: docker.snakekiss.com/library/nginx:1.25-alpine
     container_name: disseckill-gateway
     ports:
       - "80:80"
@@ -280,7 +293,7 @@
       - disseckill-net
 
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.10
+    image: docker.snakekiss.com/elasticsearch/elasticsearch:7.17.10
     container_name: disseckill-es
     environment:
       - discovery.type=single-node
@@ -303,7 +316,7 @@ volumes:
   mysql_data:
   mysql_slave_data:
   redis_data:
-  rabbitmq_data:
+  kafka_data:
   es_data:
 
 networks:

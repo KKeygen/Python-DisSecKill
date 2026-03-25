@@ -4,13 +4,11 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from jose import jwt, JWTError
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import select, func as sa_func
-from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 
 from app.config import get_settings
-from app.database import get_db
-from app.models import Order
+from app.snowflake import generate_order_id
+from app.sharding import get_sharding_manager, ShardingRouter
 from app.schemas import OrderCreateRequest, OrderResponse, OrderListResponse
 
 settings = get_settings()
@@ -26,22 +24,15 @@ def _get_user_id(credentials: HTTPAuthorizationCredentials = Depends(security_sc
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的认证凭据")
 
 
-def _generate_order_id() -> str:
-    return datetime.now().strftime("%Y%m%d%H%M%S") + uuid.uuid4().hex[:18]
-
-
 @router.post("/", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 async def create_order(
     req: OrderCreateRequest,
     user_id: int = Depends(_get_user_id),
-    db: AsyncSession = Depends(get_db),
 ):
-    """创建订单（同步扣减库存）"""
+    """创建订单（同步扣减库存，使用分库分表）"""
     async with httpx.AsyncClient(timeout=10.0) as client:
         # 查询商品价格
-        goods_resp = await client.get(
-            f"{settings.GOODS_SERVICE_URL}/api/goods/{req.goods_id}",
-        )
+        goods_resp = await client.get(f"{settings.GOODS_SERVICE_URL}/api/goods/{req.goods_id}")
         if goods_resp.status_code != 200:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="商品不存在")
         goods_data = goods_resp.json()
@@ -58,18 +49,34 @@ async def create_order(
 
     total_price = req.count * unit_price
 
-    order = Order(
-        id=_generate_order_id(),
+    # 生成雪花ID
+    order_id = generate_order_id(user_id)
+    
+    # 使用分片管理器插入订单
+    sharding_manager = get_sharding_manager()
+    await sharding_manager.insert_order(
+        order_id=order_id,
         user_id=user_id,
         goods_id=req.goods_id,
         count=req.count,
         total_price=total_price,
         address=req.address,
     )
-    db.add(order)
-    await db.commit()
-    await db.refresh(order)
-    return order
+
+    # 构造响应（简化版，实际应从DB重新查询）
+    return OrderResponse(
+        id=order_id,
+        user_id=user_id,
+        goods_id=req.goods_id,
+        count=req.count,
+        total_price=total_price,
+        pay_method=3,
+        order_status=1,
+        address=req.address,
+        trade_no=None,
+        is_seckill=False,
+        create_time=datetime.now(),
+    )
 
 
 @router.get("/", response_model=OrderListResponse)
@@ -78,30 +85,62 @@ async def list_orders(
     size: int = Query(10, ge=1, le=50),
     order_status: int | None = None,
     user_id: int = Depends(_get_user_id),
-    db: AsyncSession = Depends(get_db),
 ):
-    """当前用户订单列表"""
-    query = select(Order).where(Order.user_id == user_id)
-    count_query = select(sa_func.count()).select_from(Order).where(Order.user_id == user_id)
-
-    if order_status is not None:
-        query = query.where(Order.order_status == order_status)
-        count_query = count_query.where(Order.order_status == order_status)
-
-    total = (await db.execute(count_query)).scalar()
-    result = await db.execute(query.offset((page - 1) * size).limit(size).order_by(Order.create_time.desc()))
-    return OrderListResponse(items=result.scalars().all(), total=total)
+    """当前用户订单列表（跨分片聚合查询）"""
+    sharding_manager = get_sharding_manager()
+    orders, total = await sharding_manager.query_orders_by_user(
+        user_id=user_id,
+        page=page,
+        size=size,
+        order_status=order_status,
+    )
+    
+    # 转换为Pydantic模型
+    order_responses = []
+    for order_dict in orders:
+        order_responses.append(OrderResponse(
+            id=order_dict["id"],
+            user_id=order_dict["user_id"],
+            goods_id=order_dict["goods_id"],
+            count=order_dict["count"],
+            total_price=float(order_dict["total_price"]),
+            pay_method=order_dict["pay_method"],
+            order_status=order_dict["order_status"],
+            address=order_dict.get("address"),
+            trade_no=order_dict.get("trade_no"),
+            is_seckill=bool(order_dict["is_seckill"]),
+            create_time=order_dict["create_time"],
+        ))
+    
+    return OrderListResponse(items=order_responses, total=total)
 
 
 @router.get("/{order_id}", response_model=OrderResponse)
 async def get_order(
-    order_id: str,
+    order_id: int,
     user_id: int = Depends(_get_user_id),
-    db: AsyncSession = Depends(get_db),
 ):
-    """订单详情"""
-    result = await db.execute(select(Order).where(Order.id == order_id, Order.user_id == user_id))
-    order = result.scalar_one_or_none()
-    if not order:
+    """订单详情（基因法反查分库）"""
+    sharding_manager = get_sharding_manager()
+    
+    # 验证基因：order_id最低位应该等于user_id%2
+    if (order_id & 1) != (user_id % 2):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
-    return order
+    
+    order_dict = await sharding_manager.query_order_by_id(order_id, user_id)
+    if not order_dict:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
+    
+    return OrderResponse(
+        id=order_dict["id"],
+        user_id=order_dict["user_id"],
+        goods_id=order_dict["goods_id"],
+        count=order_dict["count"],
+        total_price=float(order_dict["total_price"]),
+        pay_method=order_dict["pay_method"],
+        order_status=order_dict["order_status"],
+        address=order_dict.get("address"),
+        trade_no=order_dict.get("trade_no"),
+        is_seckill=bool(order_dict["is_seckill"]),
+        create_time=order_dict["create_time"],
+    )

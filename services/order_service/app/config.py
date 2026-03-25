@@ -9,10 +9,8 @@ class Settings(BaseSettings):
     MYSQL_ROOT_PASSWORD: str = "disseckill_root_2026"
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_DEFAULT_USER: str = "guest"
-    RABBITMQ_DEFAULT_PASS: str = "guest"
+    KAFKA_HOST: str = "localhost"
+    KAFKA_PORT: int = 9092
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     INVENTORY_SERVICE_URL: str = "http://inventory-service-1:8004"
@@ -27,11 +25,17 @@ class Settings(BaseSettings):
         )
 
     @property
-    def rabbitmq_url(self) -> str:
+    def shard_url_template(self) -> str:
+        """分片库URL模板，用于分库分表连接"""
         return (
-            f"amqp://{self.RABBITMQ_DEFAULT_USER}:{self.RABBITMQ_DEFAULT_PASS}"
-            f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
+            f"mysql+aiomysql://root:{self.MYSQL_ROOT_PASSWORD}"
+            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{{db_name}}"
+            f"?charset=utf8mb4"
         )
+
+    @property
+    def kafka_url(self) -> str:
+        return f"{self.KAFKA_HOST}:{self.KAFKA_PORT}"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

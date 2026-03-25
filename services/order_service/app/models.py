@@ -10,7 +10,7 @@ class Base(DeclarativeBase):
 class Order(Base):
     __tablename__ = "df_order"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, comment="雪花算法+基因法订单ID")
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     goods_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     count: Mapped[int] = mapped_column(default=1)

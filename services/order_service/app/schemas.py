@@ -9,7 +9,7 @@ class OrderCreateRequest(BaseModel):
 
 
 class OrderResponse(BaseModel):
-    id: str
+    id: int
     user_id: int
     goods_id: int
     count: int

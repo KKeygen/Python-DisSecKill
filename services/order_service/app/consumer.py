@@ -1,8 +1,8 @@
 """
-秒杀订单 MQ 消费者
+秒杀订单 Kafka 消费者 + 分库分表
 
-从 RabbitMQ seckill_order_queue 消费消息，创建秒杀订单。
-包含：幂等校验、MySQL 乐观锁扣减、失败时 Redis 补偿回滚。
+从 Kafka seckill_order_topic 消费消息，创建秒杀订单到分片库表。
+包含：幂等校验、雪花ID生成、MySQL 乐观锁扣减、失败时 Redis 补偿回滚。
 
 启动方式：python -m app.consumer
 """
@@ -13,21 +13,18 @@ import logging
 import uuid
 from datetime import datetime
 
-import aio_pika
+from aiokafka import AIOKafkaConsumer
 import redis.asyncio as aioredis
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy import text
 
 from app.config import get_settings
+from app.snowflake import init_snowflake, SnowflakeGenerator
+from app.sharding import init_sharding_manager, ShardingManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("seckill_consumer")
 
 settings = get_settings()
-
-# ==================== 数据库连接 ====================
-engine = create_async_engine(settings.database_url, pool_size=5, max_overflow=5)
-SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 # ==================== Redis 连接 ====================
 redis_client: aioredis.Redis | None = None
@@ -41,61 +38,28 @@ async def get_redis() -> aioredis.Redis:
     return redis_client
 
 
-# ==================== ORM 模型(内联避免循环导入) ====================
-from sqlalchemy import BigInteger, String, SmallInteger, Boolean, DateTime, Numeric, func, Integer
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+# ==================== 幂等检查 ====================
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-class Inventory(Base):
-    __tablename__ = "df_inventory"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    goods_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
-    stock: Mapped[int] = mapped_column(default=0)
-    locked_stock: Mapped[int] = mapped_column(default=0)
-    version: Mapped[int] = mapped_column(Integer, default=0)
-
-
-class Order(Base):
-    __tablename__ = "df_order"
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    goods_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    count: Mapped[int] = mapped_column(default=1)
-    total_price: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
-    pay_method: Mapped[int] = mapped_column(SmallInteger, default=3)
-    order_status: Mapped[int] = mapped_column(SmallInteger, default=1)
-    address: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    trade_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    is_seckill: Mapped[bool] = mapped_column(Boolean, default=False)
-    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    update_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-class SeckillProcessed(Base):
-    """幂等去重表"""
-    __tablename__ = "df_seckill_processed"
-    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    order_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-
-# ==================== 工具函数 ====================
-
-def generate_order_id() -> str:
-    return datetime.now().strftime("%Y%m%d%H%M%S") + uuid.uuid4().hex[:18]
-
-
-async def is_processed(request_id: str) -> str | None:
-    """检查消息是否已处理，返回order_id或None"""
-    async with SessionLocal() as db:
-        result = await db.execute(
-            select(SeckillProcessed.order_id).where(SeckillProcessed.request_id == request_id)
-        )
-        return result.scalar_one_or_none()
+async def is_processed(request_id: str, sharding_manager: ShardingManager) -> int | None:
+    """
+    检查消息是否已处理（跨所有分片库查询）
+    
+    Returns:
+        order_id or None
+    """
+    # 简化版：在两个分片库中都查询幂等表
+    for db_idx in range(2):
+        db_name = f"disseckill_order_{db_idx}"
+        sql = "SELECT order_id FROM df_seckill_processed WHERE request_id = :request_id"
+        try:
+            async with await sharding_manager.get_session(db_name) as session:
+                result = await session.execute(text(sql), {"request_id": request_id})
+                order_id = result.scalar_one_or_none()
+                if order_id:
+                    return order_id
+        except Exception as e:
+            logger.warning(f"幂等检查失败 {db_name}: {e}")
+    return None
 
 
 async def rollback_redis(goods_id: int, user_id: int):
@@ -110,118 +74,142 @@ async def rollback_redis(goods_id: int, user_id: int):
 
 # ==================== 消息处理 ====================
 
-async def process_seckill_message(message: aio_pika.abc.AbstractIncomingMessage):
+async def process_seckill_message(message, sharding_manager: ShardingManager, generator: SnowflakeGenerator):
     """处理单条秒杀消息"""
-    async with message.process(requeue=False):
-        data = json.loads(message.body.decode())
-        request_id = data["request_id"]
-        user_id = data["user_id"]
-        goods_id = data["goods_id"]
+    data = json.loads(message.value.decode())
+    request_id = data["request_id"]
+    user_id = data["user_id"]
+    goods_id = data["goods_id"]
 
-        logger.info(f"消费消息: request_id={request_id}, user={user_id}, goods={goods_id}")
+    logger.info(f"消费消息: request_id={request_id}, user={user_id}, goods={goods_id}")
 
-        # 幂等检查
-        existing_order_id = await is_processed(request_id)
-        if existing_order_id:
-            logger.info(f"消息已处理(幂等跳过): request_id={request_id}, order={existing_order_id}")
-            return
+    # 幂等检查（跨分片）
+    existing_order_id = await is_processed(request_id, sharding_manager)
+    if existing_order_id:
+        logger.info(f"消息已处理(幂等跳过): request_id={request_id}, order={existing_order_id}")
+        return
 
-        async with SessionLocal() as db:
-            async with db.begin():
-                # 读取当前库存 + 版本号
-                inv_result = await db.execute(
-                    select(Inventory).where(Inventory.goods_id == goods_id)
-                )
-                inv = inv_result.scalar_one_or_none()
+    # 生成订单ID（雪花算法+基因法）
+    order_id = generator.generate(user_id)
+    
+    # 获取目标分片
+    from app.sharding import ShardingRouter
+    db_name, table_name = ShardingRouter.resolve(user_id, order_id)
+    
+    try:
+        async with await sharding_manager.get_session(db_name) as session:
+            async with session.begin():
+                # 读取当前库存 + 版本号（从主库）
+                inv_sql = f"""
+                    SELECT stock, version FROM disseckill.df_inventory 
+                    WHERE goods_id = :goods_id
+                """
+                inv_result = await session.execute(text(inv_sql), {"goods_id": goods_id})
+                inv_row = inv_result.mappings().first()
 
-                if not inv or inv.stock <= 0:
+                if not inv_row or inv_row["stock"] <= 0:
                     logger.warning(f"DB库存不足: goods_id={goods_id}, 执行Redis补偿")
                     await rollback_redis(goods_id, user_id)
                     return
 
-                # 乐观锁扣减
-                stmt = (
-                    update(Inventory)
-                    .where(
-                        Inventory.goods_id == goods_id,
-                        Inventory.stock > 0,
-                        Inventory.version == inv.version,
-                    )
-                    .values(stock=Inventory.stock - 1, version=Inventory.version + 1)
-                )
-                result = await db.execute(stmt)
+                current_version = inv_row["version"]
+
+                # 乐观锁扣减库存（在主库）
+                update_sql = """
+                    UPDATE disseckill.df_inventory 
+                    SET stock = stock - 1, version = version + 1 
+                    WHERE goods_id = :goods_id AND stock > 0 AND version = :version
+                """
+                result = await session.execute(text(update_sql), {
+                    "goods_id": goods_id,
+                    "version": current_version
+                })
 
                 if result.rowcount == 0:
                     logger.warning(f"乐观锁冲突: goods_id={goods_id}, 执行Redis补偿")
                     await rollback_redis(goods_id, user_id)
                     return
 
-                # 创建订单
-                order_id = generate_order_id()
+                # 创建订单（插入到正确的分片表）
                 seckill_price = float(data.get("seckill_price", 0))
-                order = Order(
-                    id=order_id,
-                    user_id=user_id,
-                    goods_id=goods_id,
-                    count=1,
-                    total_price=seckill_price,
-                    is_seckill=True,
-                    order_status=1,  # 待支付
-                )
-                db.add(order)
+                order_sql = f"""
+                    INSERT INTO {table_name}
+                        (id, user_id, goods_id, count, total_price, is_seckill, order_status, pay_method)
+                    VALUES
+                        (:id, :user_id, :goods_id, 1, :total_price, TRUE, 1, 3)
+                """
+                await session.execute(text(order_sql), {
+                    "id": order_id,
+                    "user_id": user_id,
+                    "goods_id": goods_id,
+                    "total_price": seckill_price,
+                })
 
                 # 写入幂等表
-                processed = SeckillProcessed(request_id=request_id, order_id=order_id)
-                db.add(processed)
+                processed_sql = """
+                    INSERT INTO df_seckill_processed (request_id, order_id)
+                    VALUES (:request_id, :order_id)
+                """
+                await session.execute(text(processed_sql), {
+                    "request_id": request_id,
+                    "order_id": order_id
+                })
 
         # 缓存秒杀结果供前端轮询
         r = await get_redis()
         await r.set(
             f"seckill:result:{user_id}:{goods_id}",
-            json.dumps({"order_id": order_id, "status": "created"}),
+            json.dumps({"order_id": str(order_id), "status": "created"}),
             ex=1800,  # 30分钟过期
         )
 
-        logger.info(f"订单创建成功: order_id={order_id}, user={user_id}, goods={goods_id}")
+        logger.info(f"订单创建成功: order_id={order_id}, user={user_id}, goods={goods_id}, 分片={db_name}.{table_name}")
+
+    except Exception as e:
+        logger.error(f"订单创建失败: {e}, 执行Redis补偿")
+        await rollback_redis(goods_id, user_id)
 
 
 # ==================== 主循环 ====================
 
 async def main():
-    logger.info("秒杀订单消费者启动中...")
-    logger.info(f"RabbitMQ: {settings.RABBITMQ_HOST}:{settings.RABBITMQ_PORT}")
-    logger.info(f"MySQL: {settings.MYSQL_HOST}:{settings.MYSQL_PORT}/{settings.MYSQL_DATABASE}")
+    logger.info("秒杀订单Kafka消费者启动中...")
+    logger.info(f"Kafka: {settings.KAFKA_HOST}:{settings.KAFKA_PORT}")
+    logger.info(f"MySQL: {settings.MYSQL_HOST}:{settings.MYSQL_PORT}")
 
-    # 确保幂等表存在
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+    # 初始化雪花算法生成器
+    generator = init_snowflake(worker_id=0, db_count=2)
+    
+    # 初始化分片管理器
+    sharding_manager = init_sharding_manager(settings.shard_url_template)
 
-    # 连接 RabbitMQ
-    connection = await aio_pika.connect_robust(settings.rabbitmq_url)
-    channel = await connection.channel()
-    await channel.set_qos(prefetch_count=1)
-
-    # 声明死信交换机和队列
-    dlx = await channel.declare_exchange("seckill_dlx", aio_pika.ExchangeType.DIRECT, durable=True)
-    dlq = await channel.declare_queue("seckill_dlq", durable=True)
-    await dlq.bind(dlx, routing_key="seckill_dlq")
-
-    # 声明主队列
-    queue = await channel.declare_queue(
-        "seckill_order_queue",
-        durable=True,
-        arguments={
-            "x-dead-letter-exchange": "seckill_dlx",
-            "x-dead-letter-routing-key": "seckill_dlq",
-            "x-message-ttl": 30000,
-        },
+    # 创建Kafka消费者
+    consumer = AIOKafkaConsumer(
+        "seckill_order_topic",
+        bootstrap_servers=settings.kafka_url,
+        group_id="seckill_order_consumer_group",
+        auto_offset_reset="earliest",
+        enable_auto_commit=True,
+        value_deserializer=lambda m: m,  # 原始字节，在处理函数中解析JSON
     )
 
-    logger.info("开始监听 seckill_order_queue ...")
-    await queue.consume(process_seckill_message)
+    try:
+        await consumer.start()
+        logger.info("开始监听 seckill_order_topic ...")
 
-    # 永久运行
-    await asyncio.Future()
+        async for message in consumer:
+            try:
+                await process_seckill_message(message, sharding_manager, generator)
+            except Exception as e:
+                logger.error(f"处理消息失败: {e}, offset={message.offset}")
+                # Kafka会自动提交offset，失败的消息不会重复处理
+                # 如需死信队列，可手动发送到DLQ topic
+
+    finally:
+        await consumer.stop()
+        await sharding_manager.close()
+        if redis_client:
+            await redis_client.aclose()
 
 
 if __name__ == "__main__":

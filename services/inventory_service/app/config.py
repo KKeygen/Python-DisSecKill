@@ -9,10 +9,8 @@ class Settings(BaseSettings):
     MYSQL_ROOT_PASSWORD: str = "disseckill_root_2026"
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
-    RABBITMQ_HOST: str = "localhost"
-    RABBITMQ_PORT: int = 5672
-    RABBITMQ_DEFAULT_USER: str = "guest"
-    RABBITMQ_DEFAULT_PASS: str = "guest"
+    KAFKA_HOST: str = "localhost"
+    KAFKA_PORT: int = 9092
 
     @property
     def database_url(self) -> str:
@@ -27,11 +25,8 @@ class Settings(BaseSettings):
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/2"
 
     @property
-    def rabbitmq_url(self) -> str:
-        return (
-            f"amqp://{self.RABBITMQ_DEFAULT_USER}:{self.RABBITMQ_DEFAULT_PASS}"
-            f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
-        )
+    def kafka_url(self) -> str:
+        return f"{self.KAFKA_HOST}:{self.KAFKA_PORT}"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

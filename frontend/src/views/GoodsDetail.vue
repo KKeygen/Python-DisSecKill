@@ -22,9 +22,25 @@
           <div class="meta-item"><span class="meta-label">状态</span><span>{{ goods.status === 1 ? '在售' : '下架' }}</span></div>
         </div>
 
+        <!-- 秒杀商品：显示限购信息和数量选择 -->
+        <div v-if="goods.is_seckill" class="seckill-options">
+          <div class="limit-info-detail">
+            <span>限购 {{ limitPerUser }} 件</span>
+            <span v-if="auth.isLoggedIn">已购 {{ userPurchased }} 件</span>
+          </div>
+          <div v-if="canBuyCount > 0" class="quantity-row">
+            <span class="qty-label">购买数量：</span>
+            <div class="quantity-selector">
+              <button class="qty-btn" @click="seckillCount = Math.max(1, seckillCount - 1)" :disabled="seckillCount <= 1">−</button>
+              <span class="qty-value">{{ seckillCount }}</span>
+              <button class="qty-btn" @click="seckillCount = Math.min(canBuyCount, seckillCount + 1)" :disabled="seckillCount >= canBuyCount">+</button>
+            </div>
+          </div>
+        </div>
+
         <div class="action-row">
-          <button v-if="goods.is_seckill" class="btn btn-danger btn-lg" @click="handleSeckill" :disabled="seckilling">
-            {{ seckilling ? '抢购中...' : '立即秒杀' }}
+          <button v-if="goods.is_seckill" class="btn btn-danger btn-lg" @click="handleSeckill" :disabled="seckilling || canBuyCount <= 0">
+            {{ canBuyCount <= 0 ? '已达限购' : seckilling ? '抢购中...' : '立即秒杀' }}
           </button>
           <button v-else class="btn btn-primary btn-lg" @click="handleAddToCart">加入购物车</button>
         </div>
@@ -40,7 +56,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { goodsApi, inventoryApi } from '../api'
 import { useAuthStore } from '../stores/auth'
@@ -55,11 +71,29 @@ const seckilling = ref(false)
 const seckillMsg = ref('')
 const seckillSuccess = ref(false)
 
+// 秒杀限购相关状态
+const limitPerUser = ref(2)
+const userPurchased = ref(0)
+const seckillCount = ref(1)
+
+const canBuyCount = computed(() => Math.max(0, limitPerUser.value - userPurchased.value))
+
 onMounted(async () => {
   const id = Number(route.params.id)
   try {
     const res = await goodsApi.detail(id)
     goods.value = res.data
+    
+    // 如果是秒杀商品且用户已登录，查询用户购买信息
+    if (goods.value?.is_seckill && auth.isLoggedIn && auth.user) {
+      try {
+        const info = await inventoryApi.getUserSeckillInfo(id, auth.user.id)
+        if (info.data) {
+          userPurchased.value = info.data.purchased_count || 0
+          limitPerUser.value = info.data.limit_per_user || 2
+        }
+      } catch { /* ignore */ }
+    }
   } catch { /* ignore */ }
 })
 
@@ -77,12 +111,29 @@ async function handleSeckill() {
     seckillSuccess.value = false
     return
   }
+  if (canBuyCount.value <= 0) {
+    seckillMsg.value = '您已达到限购数量'
+    seckillSuccess.value = false
+    return
+  }
+  if (seckillCount.value > canBuyCount.value) {
+    seckillMsg.value = `您最多还可购买 ${canBuyCount.value} 件`
+    seckillSuccess.value = false
+    return
+  }
   seckilling.value = true
   seckillMsg.value = ''
   try {
-    const res = await inventoryApi.seckill({ goods_id: goods.value.id, user_id: auth.user.id })
+    const res = await inventoryApi.seckill({ 
+      goods_id: goods.value.id, 
+      user_id: auth.user.id,
+      count: seckillCount.value
+    })
     seckillSuccess.value = res.data.success
     seckillMsg.value = res.data.message
+    if (res.data.success) {
+      userPurchased.value += seckillCount.value
+    }
   } catch (e: any) {
     seckillSuccess.value = false
     seckillMsg.value = e.response?.data?.detail || '秒杀请求失败'
@@ -162,7 +213,7 @@ async function handleSeckill() {
 .meta-list {
   display: flex;
   gap: 32px;
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .meta-item {
@@ -173,6 +224,69 @@ async function handleSeckill() {
 
 .meta-label {
   color: var(--text-muted);
+}
+
+/* 秒杀选项区域 */
+.seckill-options {
+  margin-bottom: 24px;
+  padding: 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.limit-info-detail {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.quantity-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.qty-label {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.quantity-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.qty-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  cursor: pointer;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  transition: all 0.2s;
+}
+
+.qty-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.qty-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.qty-value {
+  font-size: 1.2rem;
+  font-weight: 600;
+  min-width: 32px;
+  text-align: center;
 }
 
 .action-row {

@@ -27,6 +27,20 @@ const routes: RouteRecordRaw[] = [
   },
   { path: '/login', name: 'Login', component: () => import('../views/Login.vue') },
   { path: '/register', name: 'Register', component: () => import('../views/Register.vue') },
+  
+  // ===== 商家后台 =====
+  {
+    path: '/admin',
+    component: () => import('../views/admin/AdminLayout.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      { path: '', redirect: '/admin/dashboard' },
+      { path: 'dashboard', name: 'AdminDashboard', component: () => import('../views/admin/Dashboard.vue') },
+      { path: 'products', name: 'AdminProducts', component: () => import('../views/admin/Products.vue') },
+      { path: 'seckill', name: 'AdminSeckill', component: () => import('../views/admin/SeckillAdmin.vue') },
+      { path: 'orders', name: 'AdminOrders', component: () => import('../views/admin/OrdersAdmin.vue') },
+    ],
+  },
 ]
 
 const router = createRouter({

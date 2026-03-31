@@ -2,6 +2,18 @@
   <div class="container goods-list-page">
     <h1 class="page-title">商品列表</h1>
 
+    <!-- 搜索栏 -->
+    <div class="search-bar">
+      <input 
+        v-model="searchQuery" 
+        type="text" 
+        placeholder="搜索商品..." 
+        class="search-input"
+        @keyup.enter="handleSearch"
+      />
+      <button class="search-btn" @click="handleSearch">搜索</button>
+    </div>
+
     <!-- 分类筛选 -->
     <div class="filter-bar">
       <button
@@ -65,6 +77,7 @@ const categories = ref<Category[]>([])
 const goods = ref<GoodsItem[]>([])
 const selectedCategory = ref<number | null>(null)
 const loading = ref(false)
+const searchQuery = ref('')
 
 // 根据商品ID生成稳定的渐变色作为图片占位
 const gradients = [
@@ -102,6 +115,23 @@ async function loadGoods() {
   }
 }
 
+async function handleSearch() {
+  if (!searchQuery.value.trim()) {
+    loadGoods()
+    return
+  }
+  loading.value = true
+  try {
+    const res = await goodsApi.search({ q: searchQuery.value, page: 1, size: 20 })
+    goods.value = res.data.items || res.data || []
+  } catch (err) {
+    console.error('Search failed:', err)
+    goods.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
 watch(selectedCategory, loadGoods)
 onMounted(() => { loadCategories(); loadGoods() })
 </script>
@@ -115,6 +145,43 @@ onMounted(() => { loadCategories(); loadGoods() })
   font-size: 1.8rem;
   font-weight: 700;
   margin-bottom: 24px;
+}
+
+.search-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+  max-width: 500px;
+}
+
+.search-input {
+  flex: 1;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.search-btn {
+  padding: 12px 24px;
+  background: var(--primary);
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--bg-void);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition);
+}
+
+.search-btn:hover {
+  opacity: 0.9;
 }
 
 .filter-bar {

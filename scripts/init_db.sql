@@ -255,6 +255,53 @@ CREATE TABLE IF NOT EXISTS df_seckill_processed (
     INDEX idx_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ===================== 本地消息表（事务消息保障） =====================
+-- 用于实现基于本地消息表的分布式事务
+CREATE TABLE IF NOT EXISTS df_outbox (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    message_id VARCHAR(36) NOT NULL UNIQUE COMMENT '消息唯一ID',
+    topic VARCHAR(100) NOT NULL COMMENT 'Kafka Topic',
+    message_key VARCHAR(100) DEFAULT NULL COMMENT '消息Key（分区键）',
+    payload TEXT NOT NULL COMMENT '消息体JSON',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0:待发送 1:已发送 2:发送失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_status (status),
+    INDEX idx_create (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='本地消息表-事务消息';
+
+-- ===================== 支付记录表 =====================
+CREATE TABLE IF NOT EXISTS df_payment_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id BIGINT NOT NULL COMMENT '订单ID',
+    trade_no VARCHAR(64) NOT NULL UNIQUE COMMENT '交易流水号',
+    pay_method TINYINT NOT NULL COMMENT '支付方式: 1-支付宝 2-微信 3-余额',
+    amount DECIMAL(10,2) NOT NULL COMMENT '支付金额',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0:待支付 1:支付成功 2:支付失败 3:已退款',
+    callback_data TEXT DEFAULT NULL COMMENT '支付回调原始数据',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_order (order_id),
+    INDEX idx_trade (trade_no),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付记录表';
+
+-- ===================== Saga事务补偿记录表 =====================
+CREATE TABLE IF NOT EXISTS df_saga_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    saga_id VARCHAR(36) NOT NULL COMMENT 'Saga事务ID',
+    step_name VARCHAR(50) NOT NULL COMMENT '步骤名称',
+    step_order INT NOT NULL COMMENT '步骤顺序',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0:待执行 1:已执行 2:已补偿 3:补偿失败',
+    request_data TEXT COMMENT '请求数据',
+    response_data TEXT COMMENT '响应数据',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_saga (saga_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Saga事务日志表';
+
 USE disseckill_order_1;
 CREATE TABLE IF NOT EXISTS df_seckill_processed (
     request_id VARCHAR(36) PRIMARY KEY COMMENT '幂等键(UUID)',
@@ -263,3 +310,49 @@ CREATE TABLE IF NOT EXISTS df_seckill_processed (
     INDEX idx_order (order_id),
     INDEX idx_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 本地消息表（分片库1）
+CREATE TABLE IF NOT EXISTS df_outbox (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    message_id VARCHAR(36) NOT NULL UNIQUE COMMENT '消息唯一ID',
+    topic VARCHAR(100) NOT NULL COMMENT 'Kafka Topic',
+    message_key VARCHAR(100) DEFAULT NULL COMMENT '消息Key（分区键）',
+    payload TEXT NOT NULL COMMENT '消息体JSON',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0:待发送 1:已发送 2:发送失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_status (status),
+    INDEX idx_create (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='本地消息表-事务消息';
+
+-- 支付记录表（分片库1）
+CREATE TABLE IF NOT EXISTS df_payment_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    order_id BIGINT NOT NULL COMMENT '订单ID',
+    trade_no VARCHAR(64) NOT NULL UNIQUE COMMENT '交易流水号',
+    pay_method TINYINT NOT NULL COMMENT '支付方式: 1-支付宝 2-微信 3-余额',
+    amount DECIMAL(10,2) NOT NULL COMMENT '支付金额',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0:待支付 1:支付成功 2:支付失败 3:已退款',
+    callback_data TEXT DEFAULT NULL COMMENT '支付回调原始数据',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_order (order_id),
+    INDEX idx_trade (trade_no),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付记录表';
+
+-- Saga事务补偿记录表（分片库1）
+CREATE TABLE IF NOT EXISTS df_saga_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    saga_id VARCHAR(36) NOT NULL COMMENT 'Saga事务ID',
+    step_name VARCHAR(50) NOT NULL COMMENT '步骤名称',
+    step_order INT NOT NULL COMMENT '步骤顺序',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0:待执行 1:已执行 2:已补偿 3:补偿失败',
+    request_data TEXT COMMENT '请求数据',
+    response_data TEXT COMMENT '响应数据',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_saga (saga_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Saga事务日志表';

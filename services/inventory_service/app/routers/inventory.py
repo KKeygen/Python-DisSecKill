@@ -61,26 +61,57 @@ sold_out_map: dict[int, bool] = {}
 
 
 # ==================== Lua脚本 ====================
+# 增强版Lua脚本：支持限购N件
 SECKILL_LUA_SCRIPT = """
-local stock_key = KEYS[1]
-local user_set_key = KEYS[2]
-local user_id = ARGV[1]
+local stock_key = KEYS[1]           -- 库存键 seckill:stock:{goods_id}
+local user_count_key = KEYS[2]      -- 用户购买计数键 seckill:user_count:{goods_id}
+local limit_key = KEYS[3]           -- 限购数量键 seckill:limit:{goods_id}
+local user_id = ARGV[1]             -- 用户ID
+local buy_count = tonumber(ARGV[2]) -- 本次购买数量
 
--- 检查用户是否已秒杀
-if redis.call('sismember', user_set_key, user_id) == 1 then
-    return -1  -- 重复秒杀
+-- 获取限购数量（默认1）
+local limit = tonumber(redis.call('get', limit_key) or '1')
+
+-- 获取用户已购买数量
+local bought = tonumber(redis.call('hget', user_count_key, user_id) or '0')
+
+-- 检查是否超过限购
+if bought + buy_count > limit then
+    return -1  -- 超过限购数量
 end
 
--- 检查库存
+-- 检查库存是否充足
 local stock = tonumber(redis.call('get', stock_key) or '0')
-if stock <= 0 then
+if stock < buy_count then
     return 0  -- 库存不足
 end
 
--- 扣减库存 + 记录用户
-redis.call('decr', stock_key)
-redis.call('sadd', user_set_key, user_id)
-return 1  -- 成功
+-- 原子操作：扣减库存 + 记录用户购买数量
+redis.call('decrby', stock_key, buy_count)
+redis.call('hincrby', user_count_key, user_id, buy_count)
+return buy_count  -- 返回实际购买数量
+"""
+
+# 库存回滚Lua脚本（补偿用）
+SECKILL_ROLLBACK_LUA_SCRIPT = """
+local stock_key = KEYS[1]           -- 库存键
+local user_count_key = KEYS[2]      -- 用户购买计数键
+local user_id = ARGV[1]             -- 用户ID
+local rollback_count = tonumber(ARGV[2])  -- 回滚数量
+
+-- 恢复库存
+redis.call('incrby', stock_key, rollback_count)
+
+-- 减少用户购买计数
+local bought = tonumber(redis.call('hget', user_count_key, user_id) or '0')
+local new_count = bought - rollback_count
+if new_count <= 0 then
+    redis.call('hdel', user_count_key, user_id)
+else
+    redis.call('hset', user_count_key, user_id, new_count)
+end
+
+return 1
 """
 
 
@@ -138,7 +169,14 @@ async def revert_stock(req: DeductRequest, db: AsyncSession = Depends(get_db)):
 
 @router.post("/seckill", response_model=SeckillResponse)
 async def seckill(req: SeckillRequest):
-    """秒杀抢购（Redis Lua原子操作 + MQ异步下单）"""
+    """
+    秒杀抢购（Redis Lua原子操作 + MQ异步下单）
+    
+    支持限购N件：
+    - 每次请求可指定购买数量(count)
+    - Redis使用Hash记录每个用户的累计购买数量
+    - Lua脚本原子性检查限购+扣减库存
+    """
     # 第1层：本地内存快速拒绝
     if sold_out_map.get(req.goods_id, False):
         return SeckillResponse(success=False, message="库存不足，秒杀结束")
@@ -146,16 +184,26 @@ async def seckill(req: SeckillRequest):
     r = await get_redis()
 
     stock_key = f"seckill:stock:{req.goods_id}"
-    user_set_key = f"seckill:users:{req.goods_id}"
+    user_count_key = f"seckill:user_count:{req.goods_id}"  # 改用Hash存储用户购买计数
+    limit_key = f"seckill:limit:{req.goods_id}"
 
-    # 第2层：Redis Lua 原子扣减
-    result = await r.eval(SECKILL_LUA_SCRIPT, 2, stock_key, user_set_key, str(req.user_id))
+    # 第2层：Redis Lua 原子扣减（支持限购N件）
+    result = await r.eval(
+        SECKILL_LUA_SCRIPT, 3, 
+        stock_key, user_count_key, limit_key,
+        str(req.user_id), str(req.count)
+    )
 
     if result == -1:
-        return SeckillResponse(success=False, message="请勿重复秒杀")
+        # 获取当前限购配置给用户提示
+        limit = await r.get(limit_key)
+        limit = int(limit) if limit else 1
+        return SeckillResponse(success=False, message=f"超过限购数量(限购{limit}件)")
     if result == 0:
         sold_out_map[req.goods_id] = True  # 标记售罄
         return SeckillResponse(success=False, message="库存不足，秒杀结束")
+
+    buy_count = int(result)  # 实际购买数量
 
     # 第3层：投递MQ消息，异步创建订单
     # 从 Redis 缓存中获取秒杀价格
@@ -167,7 +215,9 @@ async def seckill(req: SeckillRequest):
     message_body = {
         "user_id": req.user_id,
         "goods_id": req.goods_id,
+        "count": buy_count,  # 购买数量
         "seckill_price": seckill_price,
+        "total_price": seckill_price * buy_count,  # 总价
         "request_id": request_id,
         "timestamp": time.time(),
     }
@@ -181,28 +231,105 @@ async def seckill(req: SeckillRequest):
         )
     except Exception:
         # Kafka投递失败 → 补偿回滚Redis
-        await r.incr(stock_key)
-        await r.srem(user_set_key, str(req.user_id))
+        await r.eval(
+            SECKILL_ROLLBACK_LUA_SCRIPT, 2,
+            stock_key, user_count_key,
+            str(req.user_id), str(buy_count)
+        )
         sold_out_map.pop(req.goods_id, None)
         return SeckillResponse(success=False, message="系统繁忙，请稍后重试")
 
-    return SeckillResponse(success=True, message="秒杀成功，订单创建中", order_id=request_id)
+    return SeckillResponse(success=True, message=f"秒杀成功，购买{buy_count}件，订单创建中", order_id=request_id)
 
 
 @router.post("/init/{goods_id}")
 async def init_seckill_stock(goods_id: int, req: InitSeckillRequest):
-    """初始化秒杀商品库存到Redis"""
+    """
+    初始化秒杀商品库存到Redis
+    
+    设置：
+    - 库存数量
+    - 秒杀价格
+    - 限购数量（默认1件/人）
+    - 清空用户购买计数
+    """
     r = await get_redis()
     stock_key = f"seckill:stock:{goods_id}"
-    user_set_key = f"seckill:users:{goods_id}"
+    user_count_key = f"seckill:user_count:{goods_id}"  # 用户购买计数Hash
+    limit_key = f"seckill:limit:{goods_id}"  # 限购数量
     info_key = f"seckill:info:{goods_id}"
 
-    await r.set(stock_key, req.stock)
-    await r.delete(user_set_key)
-    # 存储秒杀价格信息
-    await r.hset(info_key, mapping={"seckill_price": str(req.seckill_price)})
+    # 使用pipeline批量设置
+    pipe = r.pipeline()
+    pipe.set(stock_key, req.stock)
+    pipe.delete(user_count_key)  # 清空用户购买计数
+    pipe.set(limit_key, req.limit_per_user)  # 设置限购数量
+    pipe.hset(info_key, mapping={
+        "seckill_price": str(req.seckill_price),
+        "limit_per_user": str(req.limit_per_user),
+        "total_stock": str(req.stock),
+    })
+    await pipe.execute()
 
     # 清除本地售罄标记
     sold_out_map.pop(goods_id, None)
 
-    return {"success": True, "goods_id": goods_id, "stock": req.stock}
+    return {
+        "success": True, 
+        "goods_id": goods_id, 
+        "stock": req.stock,
+        "limit_per_user": req.limit_per_user,
+        "seckill_price": req.seckill_price
+    }
+
+
+@router.get("/seckill/status/{goods_id}")
+async def get_seckill_status(goods_id: int):
+    """
+    查询秒杀商品状态
+    
+    返回当前库存、限购配置等信息
+    """
+    r = await get_redis()
+    stock_key = f"seckill:stock:{goods_id}"
+    limit_key = f"seckill:limit:{goods_id}"
+    info_key = f"seckill:info:{goods_id}"
+    
+    stock = await r.get(stock_key)
+    limit = await r.get(limit_key)
+    info = await r.hgetall(info_key)
+    
+    return {
+        "goods_id": goods_id,
+        "current_stock": int(stock) if stock else 0,
+        "limit_per_user": int(limit) if limit else 1,
+        "seckill_price": float(info.get("seckill_price", 0)),
+        "total_stock": int(info.get("total_stock", 0)),
+        "sold_out": sold_out_map.get(goods_id, False),
+    }
+
+
+@router.get("/seckill/user/{goods_id}/{user_id}")
+async def get_user_seckill_info(goods_id: int, user_id: int):
+    """
+    查询用户秒杀购买信息
+    
+    返回用户已购买数量和剩余可购数量
+    """
+    r = await get_redis()
+    user_count_key = f"seckill:user_count:{goods_id}"
+    limit_key = f"seckill:limit:{goods_id}"
+    
+    bought = await r.hget(user_count_key, str(user_id))
+    limit = await r.get(limit_key)
+    
+    bought_count = int(bought) if bought else 0
+    limit_count = int(limit) if limit else 1
+    
+    return {
+        "user_id": user_id,
+        "goods_id": goods_id,
+        "bought_count": bought_count,
+        "limit_per_user": limit_count,
+        "remaining_quota": max(0, limit_count - bought_count),
+    }

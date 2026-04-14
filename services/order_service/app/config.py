@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     INVENTORY_SERVICE_URL: str = "http://inventory-service-1:8004"
     GOODS_SERVICE_URL: str = "http://goods-service-1:8002"
+    NACOS_ENABLED: bool = False
+    NACOS_SERVER_ADDR: str = "nacos:8848"
+    NACOS_NAMESPACE: str = "public"
+    NACOS_GROUP: str = "DEFAULT_GROUP"
+    SERVICE_NAME: str = "order-service"
+    SERVICE_IP: str = "order-service-1"
+    SERVICE_PORT: int = 8003
 
     @property
     def database_url(self) -> str:

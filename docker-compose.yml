@@ -94,86 +94,138 @@
     networks:
       - disseckill-net
 
+  nacos:
+    image: docker.snakekiss.com/nacos/nacos-server:v2.3.2
+    container_name: disseckill-nacos
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      NACOS_AUTH_ENABLE: "false"
+      JVM_XMS: 256m
+      JVM_XMX: 256m
+    ports:
+      - "8848:8848"
+    networks:
+      - disseckill-net
+
   # ==================== 用户服务 (x2 实例，轮询负载均衡) ====================
   user-service-1:
     build:
-      context: ./services/user_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: user_service/Dockerfile
     container_name: disseckill-user-1
     ports:
       - "8001:8001"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: user-service
+      SERVICE_IP: user-service-1
+      SERVICE_PORT: 8001
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      nacos:
+        condition: service_started
     networks:
       - disseckill-net
 
   user-service-2:
     build:
-      context: ./services/user_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: user_service/Dockerfile
     container_name: disseckill-user-2
     ports:
       - "8011:8001"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: user-service
+      SERVICE_IP: user-service-2
+      SERVICE_PORT: 8001
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      nacos:
+        condition: service_started
     networks:
       - disseckill-net
 
   # ==================== 商品服务 (x2 实例，加权轮询) ====================
   goods-service-1:
     build:
-      context: ./services/goods_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: goods_service/Dockerfile
     container_name: disseckill-goods-1
     ports:
       - "8002:8002"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: goods-service
+      SERVICE_IP: goods-service-1
+      SERVICE_PORT: 8002
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      nacos:
+        condition: service_started
     networks:
       - disseckill-net
 
   goods-service-2:
     build:
-      context: ./services/goods_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: goods_service/Dockerfile
     container_name: disseckill-goods-2
     ports:
       - "8012:8002"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: goods-service
+      SERVICE_IP: goods-service-2
+      SERVICE_PORT: 8002
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      nacos:
+        condition: service_started
     networks:
       - disseckill-net
 
   # ==================== 订单服务 (x2 实例，最少连接) ====================
   order-service-1:
     build:
-      context: ./services/order_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: order_service/Dockerfile
     container_name: disseckill-order-1
     ports:
       - "8003:8003"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: order-service
+      SERVICE_IP: order-service-1
+      SERVICE_PORT: 8003
     depends_on:
       mysql:
         condition: service_healthy
@@ -181,24 +233,34 @@
         condition: service_healthy
       kafka:
         condition: service_started
+      nacos:
+        condition: service_started
     networks:
       - disseckill-net
 
   order-service-2:
     build:
-      context: ./services/order_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: order_service/Dockerfile
     container_name: disseckill-order-2
     ports:
       - "8013:8003"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: order-service
+      SERVICE_IP: order-service-2
+      SERVICE_PORT: 8003
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
+        condition: service_started
+      nacos:
         condition: service_started
     networks:
       - disseckill-net
@@ -206,12 +268,15 @@
   # 秒杀订单消费者（复用 order_service 镜像）
   seckill-consumer:
     build:
-      context: ./services/order_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: order_service/Dockerfile
     container_name: disseckill-seckill-consumer
     command: ["python", "-m", "app.consumer"]
     env_file:
       - .env
+    environment:
+      # consumer 是后台消费者，不需要 Nacos 注册
+      NACOS_ENABLED: "false"
     depends_on:
       mysql:
         condition: service_healthy
@@ -226,32 +291,48 @@
   # ==================== 库存服务 (x2 实例，IP Hash) ====================
   inventory-service-1:
     build:
-      context: ./services/inventory_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: inventory_service/Dockerfile
     container_name: disseckill-inventory-1
     ports:
       - "8004:8004"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: inventory-service
+      SERVICE_IP: inventory-service-1
+      SERVICE_PORT: 8004
+      NACOS_CONFIG_DATA_ID: inventory-config.json
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
+        condition: service_started
+      nacos:
         condition: service_started
     networks:
       - disseckill-net
 
   inventory-service-2:
     build:
-      context: ./services/inventory_service
-      dockerfile: Dockerfile
+      context: ./services
+      dockerfile: inventory_service/Dockerfile
     container_name: disseckill-inventory-2
     ports:
       - "8014:8004"
     env_file:
       - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: inventory-service
+      SERVICE_IP: inventory-service-2
+      SERVICE_PORT: 8004
+      NACOS_CONFIG_DATA_ID: inventory-config.json
     depends_on:
       mysql:
         condition: service_healthy
@@ -259,17 +340,28 @@
         condition: service_healthy
       kafka:
         condition: service_started
+      nacos:
+        condition: service_started
     networks:
       - disseckill-net
 
-  # ==================== API 网关 (Nginx 负载均衡 + 动静分离) ====================
+  # ==================== API 网关（Nacos动态发现 + 流量治理） ====================
   gateway:
-    image: docker.snakekiss.com/library/nginx:1.25-alpine
+    build:
+      context: ./services
+      dockerfile: gateway_service/Dockerfile
     container_name: disseckill-gateway
     ports:
-      - "80:80"
-    volumes:
-      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - "80:8080"
+    env_file:
+      - .env
+    environment:
+      NACOS_ENABLED: "true"
+      NACOS_SERVER_ADDR: nacos:8848
+      SERVICE_NAME: gateway-service
+      SERVICE_IP: gateway
+      SERVICE_PORT: 8080
+      NACOS_CONFIG_DATA_ID: gateway-config.json
     depends_on:
       - user-service-1
       - user-service-2
@@ -280,6 +372,7 @@
       - inventory-service-1
       - inventory-service-2
       - frontend
+      - nacos
     networks:
       - disseckill-net
 

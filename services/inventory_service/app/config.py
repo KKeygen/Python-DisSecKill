@@ -11,6 +11,16 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     KAFKA_HOST: str = "localhost"
     KAFKA_PORT: int = 9092
+    NACOS_ENABLED: bool = False
+    NACOS_SERVER_ADDR: str = "nacos:8848"
+    NACOS_NAMESPACE: str = "public"
+    NACOS_GROUP: str = "DEFAULT_GROUP"
+    NACOS_CONFIG_DATA_ID: str = "inventory-config.json"
+    NACOS_CONFIG_REFRESH_SEC: int = 5
+    SERVICE_NAME: str = "inventory-service"
+    SERVICE_IP: str = "inventory-service-1"
+    SERVICE_PORT: int = 8004
+    SECKILL_DEFAULT_LIMIT_PER_USER: int = 1
 
     @property
     def database_url(self) -> str:

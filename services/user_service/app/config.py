@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     # JWT
     JWT_SECRET_KEY: str = "your-super-secret-key-change-in-production"
     JWT_ALGORITHM: str = "HS256"
+    NACOS_ENABLED: bool = False
+    NACOS_SERVER_ADDR: str = "nacos:8848"
+    NACOS_NAMESPACE: str = "public"
+    NACOS_GROUP: str = "DEFAULT_GROUP"
+    SERVICE_NAME: str = "user-service"
+    SERVICE_IP: str = "user-service-1"
+    SERVICE_PORT: int = 8001
     JWT_EXPIRE_MINUTES: int = 1440
 
     @property

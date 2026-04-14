@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from aiokafka import AIOKafkaProducer
 
 from app.config import get_settings
+from app.dynamic_config import get_dynamic_config
 from app.database import get_db
 from app.models import Inventory
 from app.schemas import (
@@ -254,6 +255,8 @@ async def init_seckill_stock(goods_id: int, req: InitSeckillRequest):
     - 清空用户购买计数
     """
     r = await get_redis()
+    dynamic_cfg = get_dynamic_config()
+    limit_per_user = req.limit_per_user if req.limit_per_user is not None else dynamic_cfg.default_limit_per_user
     stock_key = f"seckill:stock:{goods_id}"
     user_count_key = f"seckill:user_count:{goods_id}"  # 用户购买计数Hash
     limit_key = f"seckill:limit:{goods_id}"  # 限购数量
@@ -263,10 +266,10 @@ async def init_seckill_stock(goods_id: int, req: InitSeckillRequest):
     pipe = r.pipeline()
     pipe.set(stock_key, req.stock)
     pipe.delete(user_count_key)  # 清空用户购买计数
-    pipe.set(limit_key, req.limit_per_user)  # 设置限购数量
+    pipe.set(limit_key, limit_per_user)  # 设置限购数量（支持Nacos动态属性）
     pipe.hset(info_key, mapping={
         "seckill_price": str(req.seckill_price),
-        "limit_per_user": str(req.limit_per_user),
+        "limit_per_user": str(limit_per_user),
         "total_stock": str(req.stock),
     })
     await pipe.execute()
@@ -278,8 +281,19 @@ async def init_seckill_stock(goods_id: int, req: InitSeckillRequest):
         "success": True, 
         "goods_id": goods_id, 
         "stock": req.stock,
-        "limit_per_user": req.limit_per_user,
+        "limit_per_user": limit_per_user,
         "seckill_price": req.seckill_price
+    }
+
+
+@router.get("/config/dynamic")
+async def get_dynamic_config_view():
+    """查看当前生效的Nacos动态配置"""
+    cfg = get_dynamic_config()
+    return {
+        "default_limit_per_user": cfg.default_limit_per_user,
+        "degrade_message": cfg.degrade_message,
+        "updated_at": cfg.updated_at,
     }
 
 

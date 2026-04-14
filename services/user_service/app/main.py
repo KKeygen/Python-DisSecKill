@@ -2,13 +2,25 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from app.routers.auth import router as auth_router
+from app.config import get_settings
+from app.nacos_registry import NacosRegistry
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    # 启动时可初始化连接池等
+    settings = get_settings()
+    registry = NacosRegistry(
+        server_addr=settings.NACOS_SERVER_ADDR,
+        namespace=settings.NACOS_NAMESPACE,
+        group=settings.NACOS_GROUP,
+        service_name=settings.SERVICE_NAME,
+        ip=settings.SERVICE_IP,
+        port=settings.SERVICE_PORT,
+        enabled=settings.NACOS_ENABLED,
+    )
+    await registry.register()
     yield
-    # 关闭时清理资源
+    await registry.close()
 
 
 app = FastAPI(

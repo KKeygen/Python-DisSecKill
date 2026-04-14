@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     MYSQL_SLAVE_PORT: int = 3306
     MYSQL_DATABASE: str = "disseckill"
     MYSQL_ROOT_PASSWORD: str = "disseckill_root_2026"
+    NACOS_ENABLED: bool = False
+    NACOS_SERVER_ADDR: str = "nacos:8848"
+    NACOS_NAMESPACE: str = "public"
+    NACOS_GROUP: str = "DEFAULT_GROUP"
+    SERVICE_NAME: str = "goods-service"
+    SERVICE_IP: str = "goods-service-1"
+    SERVICE_PORT: int = 8002
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     ES_HOST: str = "elasticsearch"

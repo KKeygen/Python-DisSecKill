@@ -54,3 +54,6 @@ docs/tex/whucsreport.cls
 results/
 .vite/
 docs/tex/main.synctex(busy)
+
+# Playwright CLI state
+.playwright-cli/

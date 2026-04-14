@@ -32,4 +32,4 @@ class SeckillResponse(BaseModel):
 class InitSeckillRequest(BaseModel):
     stock: int = Field(..., ge=0, description="秒杀库存数量")
     seckill_price: float = Field(0.0, ge=0, description="秒杀价格")
-    limit_per_user: int = Field(1, ge=1, le=10, description="每用户限购数量，默认1件")
+    limit_per_user: int | None = Field(None, ge=1, le=10, description="每用户限购数量，默认读取Nacos动态配置")
